@@ -30,11 +30,6 @@
     .custom-scrollbar::-webkit-scrollbar { width: 6px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
     .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
-    /* Ensure the file input is clickable but invisible */
-    .file-input-wrapper { position: relative; overflow: hidden; display: inline-block; width: 100%; cursor: pointer;}
-    .file-input-wrapper input[type=file] {
-      font-size: 100px; position: absolute; left: 0; top: 0; opacity: 0; cursor: pointer; height: 100%; width: 100%;
-    }
   </style>
 </head>
 <body>
@@ -254,35 +249,57 @@
         return { status: 'safe', color: 'bg-emerald-50 text-emerald-700 border border-emerald-200', text: '時間充裕' };
       };
 
+      // 改良版圖片壓縮：若 Canvas 壓縮失敗 (沙盒限制)，自動降級使用原始圖片 Base64，確保圖片絕對不遺失
       const compressImage = (file) => {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.readAsDataURL(file);
           reader.onload = (event) => {
+            const rawBase64 = event.target.result;
             const img = new Image();
-            img.src = event.target.result;
+            img.src = rawBase64;
+            
             img.onload = () => {
-              const canvas = document.createElement('canvas');
-              const MAX_WIDTH = 800; 
-              const MAX_HEIGHT = 800;
-              let width = img.width;
-              let height = img.height;
+              try {
+                const canvas = document.createElement('canvas');
+                const MAX_WIDTH = 800; 
+                const MAX_HEIGHT = 800;
+                let width = img.width;
+                let height = img.height;
 
-              if (width > height) {
-                if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
-              } else {
-                if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+                // 防呆：圖片長寬異常時直接返回原圖
+                if (width === 0 || height === 0) {
+                  return resolve(rawBase64);
+                }
+
+                if (width > height) {
+                  if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+                } else {
+                  if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+                // 防呆：如果 Canvas 產生無效圖或被沙盒阻擋，返回原圖
+                if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 50) {
+                  resolve(rawBase64);
+                } else {
+                  resolve(dataUrl);
+                }
+              } catch (err) {
+                console.warn("Canvas compression blocked, using original image.", err);
+                resolve(rawBase64);
               }
-
-              canvas.width = width;
-              canvas.height = height;
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(img, 0, 0, width, height);
-              resolve(canvas.toDataURL('image/jpeg', 0.6));
             };
-            img.onerror = (error) => reject(error);
+            
+            // 圖片載入失敗也傳回空字串，防止 Promise 卡住
+            img.onerror = () => resolve(''); 
           };
-          reader.onerror = (error) => reject(error);
+          reader.onerror = () => resolve(''); 
         });
       };
 
@@ -342,7 +359,6 @@
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        URL.revokeObjectURL(url);
         
         showToast('✅ 備份文字檔已成功下載');
       };
@@ -784,7 +800,7 @@
                           {images.map((imgSrc, imgIdx) => {
                             const isImageURL = imgSrc.startsWith('data:image') || imgSrc.startsWith('http');
                             return (
-                              <div key={imgIdx} className="flex flex-col items-center bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative h-full justify-center">
+                              <div key={imgIdx} className="flex flex-col items-center bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative h-full justify-center overflow-hidden">
                                 {isImageURL ? (
                                   <img 
                                     src={imgSrc} 
@@ -892,7 +908,7 @@
 
         useEffect(() => {
           if (editingItem) {
-            setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem) }));
+            setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem.referenceImages) }));
           }
         }, [editingItem]);
 
@@ -903,7 +919,7 @@
             details: tpl.details,
             dueDate: today, 
             reminderTarget: tpl.reminderTarget,
-            referenceImages: getImagesArray(tpl)
+            referenceImages: getImagesArray(tpl.referenceImages)
           });
         };
 
@@ -914,46 +930,53 @@
           const nonImages = files.filter(f => !f.type.startsWith('image/'));
           if (nonImages.length > 0) {
             showToast('請只選擇圖片檔案！');
+            e.target.value = '';
             return;
           }
 
           setIsUploading(true);
           try {
-            const currentImages = formData.referenceImages || [];
-            if (currentImages.length + files.length > 5) {
-              showToast('一筆業務筆記最多只能上傳 5 張圖片！');
-              setIsUploading(false);
-              return;
+            const compressedPromises = files.map(file => compressImage(file));
+            const newBase64s = (await Promise.all(compressedPromises)).filter(s => s && s.startsWith('data:image'));
+            
+            if (newBase64s.length === 0) {
+               throw new Error("圖片壓縮後無效");
             }
 
-            const compressedPromises = files.map(file => compressImage(file));
-            const compressedBase64s = await Promise.all(compressedPromises);
+            setFormData(prev => {
+              const prevImages = getImagesArray(prev.referenceImages);
+              if (prevImages.length + newBase64s.length > 5) {
+                showToast('⚠️ 單筆業務最多只能上傳 5 張圖片！');
+                return prev;
+              }
+              return { ...prev, referenceImages: [...prevImages, ...newBase64s] };
+            });
             
-            setFormData(prev => ({ ...prev, referenceImages: [...currentImages, ...compressedBase64s] }));
-            showToast(`✅ 成功上傳並自動壓縮了 ${compressedBase64s.length} 張照片！`);
+            showToast(`✅ 成功上傳了 ${newBase64s.length} 張照片！`);
           } catch (error) {
             console.error("Image upload error:", error);
-            showToast('圖片壓縮或上傳失敗，請重試。');
-          } finally { setIsUploading(false); }
+            showToast('❌ 圖片壓縮或上傳失敗，請重試。');
+          } finally { 
+            setIsUploading(false);
+            e.target.value = ''; // 允許重新選擇同一檔案
+          }
         };
 
         const handleRemoveImage = (indexToRemove) => {
-          const updatedImages = (formData.referenceImages || []).filter((_, idx) => idx !== indexToRemove);
-          setFormData(prev => ({ ...prev, referenceImages: updatedImages }));
+          setFormData(prev => {
+             const updatedImages = getImagesArray(prev.referenceImages).filter((_, idx) => idx !== indexToRemove);
+             return { ...prev, referenceImages: updatedImages };
+          });
         };
 
-        const handleSubmit = (e) => {
-          e.preventDefault();
-          if (!formData.title.trim() || !formData.details.trim()) return;
-          handleSaveItem(formData);
-        };
-
-        const currentImages = formData.referenceImages || [];
-
-        // --- AI 分析圖片功能 ---
         const handleAnalyzeImages = async () => {
+          const currentImages = getImagesArray(formData.referenceImages);
           if (currentImages.length === 0) {
             showToast('請先上傳至少一張實務照片供 AI 辨識！');
+            return;
+          }
+          if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
+            showToast('❌ 請先在程式碼中填寫您的 Gemini API 金鑰！');
             return;
           }
           
@@ -961,14 +984,12 @@
           showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
 
           try {
-            // 取出所有 base64 圖片 (過濾掉無法預覽的舊檔名)
             const base64Images = currentImages.filter(img => img.startsWith('data:image'));
             
             if (base64Images.length === 0) {
               throw new Error("沒有可解析的有效圖片");
             }
 
-            // 準備 Gemini API Payload
             const parts = [
               { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
                       "1. title: 簡短且明確的任務名稱 (字串)\n" +
@@ -977,9 +998,7 @@
                       "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
             ];
 
-            // 將圖片加入 Payload
             base64Images.forEach(base64Str => {
-               // 移除 'data:image/jpeg;base64,' 前綴
                const base64Data = base64Str.split(',')[1];
                const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
                parts.push({
@@ -1033,6 +1052,14 @@
             setIsAnalyzing(false);
           }
         };
+
+        const handleSubmit = (e) => {
+          e.preventDefault();
+          if (!formData.title.trim() || !formData.details.trim()) return;
+          handleSaveItem(formData);
+        };
+
+        const currentImages = getImagesArray(formData.referenceImages);
 
         return (
           <div className="space-y-6">
@@ -1099,15 +1126,25 @@
                         })}
                       </div>
                     )}
+                    
+                    {/* 突破 Ezpage 點擊限制的 Transparent Overlay 上傳框 */}
                     {currentImages.length < 5 ? (
-                      <div className="file-input-wrapper">
-                        <div className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-lg transition-colors ${isUploading ? 'bg-indigo-100 border-indigo-400' : 'bg-white hover:bg-indigo-50 border-indigo-300'}`}>
-                          <div className="flex flex-col items-center justify-center pt-3 pb-3">
-                            {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
-                            <p className="text-sm text-indigo-600 font-medium">{isUploading ? '圖片壓縮與處理中...' : `點擊選擇照片上傳 (已選 ${currentImages.length}/5 張)`}</p>
-                          </div>
+                      <div className="relative w-full h-24 rounded-lg overflow-hidden border-2 border-dashed border-indigo-300 bg-white hover:bg-indigo-50 transition-colors">
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={handleImageUpload} 
+                          disabled={isUploading || isAnalyzing} 
+                          multiple 
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-50"
+                        />
+                        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-3 pb-3">
+                          {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
+                          <p className="text-sm text-indigo-600 font-medium">
+                            {isUploading ? '圖片壓縮與處理中...' : `點擊此處上傳照片 (已選 ${currentImages.length}/5 張)`}
+                          </p>
+                          <p className="text-[10px] text-slate-400 mt-1">可以直接點擊框框，或按住 Ctrl 鍵一次選取多張</p>
                         </div>
-                        <input type="file" accept="image/*" onChange={handleImageUpload} disabled={isUploading || isAnalyzing} multiple />
                       </div>
                     ) : (
                       <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center gap-2">
@@ -1140,7 +1177,7 @@
 
                   <div className="space-y-2 md:col-span-2">
                     <label className="block text-sm font-bold text-slate-700">詳細流程與注意事項 <span className="text-rose-500">*</span></label>
-                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你寫..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
+                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你自動分類寫筆記..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
                   </div>
                 </div>
 
@@ -1157,7 +1194,6 @@
       const CategoryManager = () => (
         <div className="space-y-6">
           
-          {/* 顯眼的一鍵備份區塊 */}
           <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 rounded-xl shadow-lg border border-blue-500 text-white flex flex-col md:flex-row items-center justify-between gap-6">
             <div>
               <h2 className="text-2xl font-bold flex items-center gap-2 mb-2">
