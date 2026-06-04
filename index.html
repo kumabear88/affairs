@@ -122,23 +122,37 @@
     };
 
     function App() {
+      // 核心狀態
       const [items, setItems] = useState([]);
       const [activeTab, setActiveTab] = useState('dashboard');
       const [editingItem, setEditingItem] = useState(null);
-      
       const [user, setUser] = useState(null);
       const [loading, setLoading] = useState(true);
 
+      // 表單專屬狀態 (已提升到主元件防止重新渲染導致流失)
+      const [formData, setFormData] = useState({
+        title: '',
+        category: '',
+        details: '',
+        dueDate: '',
+        reminderTarget: '',
+        referenceImages: []
+      });
+      const [isUploading, setIsUploading] = useState(false);
+      const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+      // 分類狀態
       const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
       const [archivedCategories, setArchivedCategories] = useState([]);
       const [newCategory, setNewCategory] = useState('');
       
+      // 搜尋與小撇步狀態
       const [searchTerm, setSearchTerm] = useState('');
       const [filterCategory, setFilterCategory] = useState('');
-
       const [tips, setTips] = useState([]);
       const [newTip, setNewTip] = useState('');
 
+      // 其他 UI 狀態
       const [toastMsg, setToastMsg] = useState('');
       const [isProcessing, setIsProcessing] = useState(false);
 
@@ -249,7 +263,6 @@
         return { status: 'safe', color: 'bg-emerald-50 text-emerald-700 border border-emerald-200', text: '時間充裕' };
       };
 
-      // 改良版圖片壓縮：若 Canvas 壓縮失敗 (沙盒限制)，自動降級使用原始圖片 Base64，確保圖片絕對不遺失
       const compressImage = (file) => {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -267,10 +280,7 @@
                 let width = img.width;
                 let height = img.height;
 
-                // 防呆：圖片長寬異常時直接返回原圖
-                if (width === 0 || height === 0) {
-                  return resolve(rawBase64);
-                }
+                if (width === 0 || height === 0) return resolve(rawBase64);
 
                 if (width > height) {
                   if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -284,7 +294,6 @@
                 ctx.drawImage(img, 0, 0, width, height);
                 
                 const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-                // 防呆：如果 Canvas 產生無效圖或被沙盒阻擋，返回原圖
                 if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 50) {
                   resolve(rawBase64);
                 } else {
@@ -295,8 +304,6 @@
                 resolve(rawBase64);
               }
             };
-            
-            // 圖片載入失敗也傳回空字串，防止 Promise 卡住
             img.onerror = () => resolve(''); 
           };
           reader.onerror = () => resolve(''); 
@@ -363,9 +370,9 @@
         showToast('✅ 備份文字檔已成功下載');
       };
 
+      // --- 按鈕事件處理 ---
       const handleRestoreDefaultTasks = async () => {
         if (!user) return;
-        
         const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
@@ -374,7 +381,6 @@
           let addedCount = 0;
           const hasElec = activeItems.some(t => t.title.includes('電費'));
           const hasWater = activeItems.some(t => t.title.includes('水費'));
-          
           const newItems = [...activeItems];
 
           if (!hasElec) {
@@ -407,7 +413,6 @@
 
       const handleSaveItem = async (newItemData) => {
         if (!user) return;
-        
         try {
           if (editingItem && editingItem.id) {
             const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
@@ -432,26 +437,18 @@
         if (!user) return;
         try {
           const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
-          await updateDoc(taskRef, {
-            deletedAt: new Date().toISOString()
-          });
+          await updateDoc(taskRef, { deletedAt: new Date().toISOString() });
           showToast('資料已移至垃圾桶');
-        } catch (error) {
-          console.error("Error deleting document:", error);
-        }
+        } catch (error) { console.error("Error deleting document:", error); }
       };
 
       const handleRestoreTask = async (id) => {
         if (!user) return;
         try {
           const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
-          await updateDoc(taskRef, {
-            deletedAt: null 
-          });
+          await updateDoc(taskRef, { deletedAt: null });
           showToast('已成功還原資料');
-        } catch (error) {
-          console.error("Error restoring document:", error);
-        }
+        } catch (error) { console.error("Error restoring document:", error); }
       };
 
       const handlePermanentDelete = async (id) => {
@@ -460,9 +457,7 @@
         try {
           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
           showToast('資料已永久刪除');
-        } catch (error) {
-          console.error("Error permanently deleting:", error);
-        }
+        } catch (error) { console.error("Error permanently deleting:", error); }
       };
 
       const handleEmptyTrash = async () => {
@@ -477,18 +472,181 @@
           await Promise.all(deletePromises);
           showToast('🗑️ 垃圾桶已清空');
         } catch (error) {
-          console.error("Error emptying trash:", error);
           showToast('清空失敗，請重試');
         } finally {
           setIsProcessing(false);
         }
       };
 
-      const handleEdit = (item) => {
-        setEditingItem(item);
+      // 導覽切換與表單控制 (將狀態存放於父元件)
+      const handleAddNew = () => {
+        setEditingItem(null);
+        setFormData({
+          title: '',
+          category: categories.length > 0 ? categories[0] : '其他',
+          details: '',
+          dueDate: '',
+          reminderTarget: '',
+          referenceImages: []
+        });
         setActiveTab('form');
       };
 
+      const handleEdit = (item) => {
+        setEditingItem(item);
+        setFormData({
+          title: item.title || '',
+          category: item.category || (categories.length > 0 ? categories[0] : '其他'),
+          details: item.details || '',
+          dueDate: item.dueDate || '',
+          reminderTarget: item.reminderTarget || '',
+          referenceImages: getImagesArray(item.referenceImages)
+        });
+        setActiveTab('form');
+      };
+
+      // --- 圖片上傳與 AI 功能 ---
+      const handleImageUpload = async (e) => {
+        const fileInput = e.target;
+        const files = Array.from(fileInput.files);
+        if (files.length === 0) return;
+
+        const nonImages = files.filter(f => !f.type.startsWith('image/'));
+        if (nonImages.length > 0) {
+          showToast('請只選擇圖片檔案！');
+          fileInput.value = '';
+          return;
+        }
+
+        setIsUploading(true);
+        try {
+          const compressedPromises = files.map(file => compressImage(file));
+          const newBase64s = (await Promise.all(compressedPromises)).filter(s => s && s.startsWith('data:image'));
+          
+          if (newBase64s.length === 0) {
+             throw new Error("圖片壓縮後無效");
+          }
+
+          setFormData(prev => {
+            const prevImages = prev.referenceImages || [];
+            if (prevImages.length + newBase64s.length > 5) {
+              showToast('⚠️ 單筆業務最多只能上傳 5 張圖片！');
+              return prev;
+            }
+            return { ...prev, referenceImages: [...prevImages, ...newBase64s] };
+          });
+          
+          showToast(`✅ 成功上傳了 ${newBase64s.length} 張照片！`);
+        } catch (error) {
+          console.error("Image upload error:", error);
+          showToast('❌ 圖片壓縮或上傳失敗，請重試。');
+        } finally { 
+          setIsUploading(false);
+          fileInput.value = ''; // 允許重新選擇同一檔案
+        }
+      };
+
+      const handleRemoveImage = (indexToRemove) => {
+        setFormData(prev => ({ 
+          ...prev, 
+          referenceImages: prev.referenceImages.filter((_, idx) => idx !== indexToRemove) 
+        }));
+      };
+
+      const handleAnalyzeImages = async () => {
+        const currentImages = formData.referenceImages || [];
+        if (currentImages.length === 0) {
+          showToast('請先上傳至少一張實務照片供 AI 辨識！');
+          return;
+        }
+        if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
+          showToast('❌ 請先在程式碼中填寫您的 Gemini API 金鑰！');
+          return;
+        }
+        
+        setIsAnalyzing(true);
+        showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
+
+        try {
+          const base64Images = currentImages.filter(img => img.startsWith('data:image'));
+          if (base64Images.length === 0) throw new Error("沒有可解析的有效圖片");
+
+          const parts = [
+            { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
+                    "1. title: 簡短且明確的任務名稱 (字串)\n" +
+                    "2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n" +
+                    "3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n" +
+                    "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
+          ];
+
+          base64Images.forEach(base64Str => {
+             const base64Data = base64Str.split(',')[1];
+             const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
+             parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
+          });
+
+          const payload = {
+            contents: [{ parts: parts }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  title: { type: "STRING" },
+                  category: { type: "STRING" },
+                  reminderTarget: { type: "STRING" },
+                  details: { type: "STRING" }
+                }
+              }
+            }
+          };
+
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            const result = JSON.parse(text);
+            setFormData(prev => ({
+              ...prev,
+              title: result.title || prev.title,
+              category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
+              reminderTarget: result.reminderTarget || prev.reminderTarget,
+              details: result.details || prev.details
+            }));
+            showToast('✨ AI 解析成功！已為您自動填入表單。');
+          } else {
+             throw new Error("API return empty text");
+          }
+        } catch (error) {
+          console.error("AI Analysis Error:", error);
+          showToast('❌ AI 解析失敗，可能是網路問題或圖片無法辨識。請手動填寫。');
+        } finally {
+          setIsAnalyzing(false);
+        }
+      };
+
+      const handleFormSubmit = (e) => {
+        e.preventDefault();
+        if (!formData.title.trim() || !formData.details.trim()) return;
+        handleSaveItem(formData);
+      };
+
+      const handleApplyTemplate = (tpl) => {
+        setFormData({
+          title: tpl.title,
+          category: tpl.category,
+          details: tpl.details,
+          dueDate: today, 
+          reminderTarget: tpl.reminderTarget,
+          referenceImages: getImagesArray(tpl.referenceImages)
+        });
+      };
+
+      // --- 分類與撇步管理 ---
       const handleAddCategory = async (e) => {
         e.preventDefault();
         const cleanName = newCategory.trim();
@@ -544,22 +702,8 @@
         } catch (error) {}
       };
 
-      const filteredItems = useMemo(() => {
-        return activeItems.filter(item => {
-          const matchSearch = item.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                              item.details?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                              item.reminderTarget?.toLowerCase().includes(searchTerm.toLowerCase());
-          const matchCategory = filterCategory === '' || item.category === filterCategory;
-          return matchSearch && matchCategory;
-        }).sort((a, b) => {
-          if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
-          if (a.dueDate) return -1;
-          if (b.dueDate) return 1;
-          return 0;
-        });
-      }, [activeItems, searchTerm, filterCategory]);
-
-      const Dashboard = () => {
+      // --- 渲染子元件 ---
+      const renderDashboard = () => {
         const upcomingItems = activeItems.filter(item => {
           if (!item.dueDate) return false;
           const status = getItemStatus(item.dueDate).status;
@@ -710,7 +854,7 @@
         );
       };
 
-      const ItemList = () => (
+      const renderItemList = () => (
         <div className="space-y-4">
           <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col md:flex-row gap-4">
             <div className="relative flex-1">
@@ -833,7 +977,7 @@
         </div>
       );
 
-      const TrashBin = () => (
+      const renderTrashBin = () => (
         <div className="space-y-4">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-xl shadow-sm border border-slate-100 gap-4">
             <div>
@@ -893,173 +1037,8 @@
         </div>
       );
 
-      const ItemForm = () => {
-        const [formData, setFormData] = useState({
-          title: editingItem?.title || '',
-          category: editingItem?.category || (categories.length > 0 ? categories[0] : ''),
-          details: editingItem?.details || '',
-          dueDate: editingItem?.dueDate || '',
-          reminderTarget: editingItem?.reminderTarget || '',
-          referenceImages: editingItem?.referenceImages || []
-        });
-
-        const [isUploading, setIsUploading] = useState(false);
-        const [isAnalyzing, setIsAnalyzing] = useState(false);
-
-        useEffect(() => {
-          if (editingItem) {
-            setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem.referenceImages) }));
-          }
-        }, [editingItem]);
-
-        const handleApplyTemplate = (tpl) => {
-          setFormData({
-            title: tpl.title,
-            category: tpl.category,
-            details: tpl.details,
-            dueDate: today, 
-            reminderTarget: tpl.reminderTarget,
-            referenceImages: getImagesArray(tpl.referenceImages)
-          });
-        };
-
-        const handleImageUpload = async (e) => {
-          const files = Array.from(e.target.files);
-          if (files.length === 0) return;
-
-          const nonImages = files.filter(f => !f.type.startsWith('image/'));
-          if (nonImages.length > 0) {
-            showToast('請只選擇圖片檔案！');
-            e.target.value = '';
-            return;
-          }
-
-          setIsUploading(true);
-          try {
-            const compressedPromises = files.map(file => compressImage(file));
-            const newBase64s = (await Promise.all(compressedPromises)).filter(s => s && s.startsWith('data:image'));
-            
-            if (newBase64s.length === 0) {
-               throw new Error("圖片壓縮後無效");
-            }
-
-            setFormData(prev => {
-              const prevImages = getImagesArray(prev.referenceImages);
-              if (prevImages.length + newBase64s.length > 5) {
-                showToast('⚠️ 單筆業務最多只能上傳 5 張圖片！');
-                return prev;
-              }
-              return { ...prev, referenceImages: [...prevImages, ...newBase64s] };
-            });
-            
-            showToast(`✅ 成功上傳了 ${newBase64s.length} 張照片！`);
-          } catch (error) {
-            console.error("Image upload error:", error);
-            showToast('❌ 圖片壓縮或上傳失敗，請重試。');
-          } finally { 
-            setIsUploading(false);
-            e.target.value = ''; // 允許重新選擇同一檔案
-          }
-        };
-
-        const handleRemoveImage = (indexToRemove) => {
-          setFormData(prev => {
-             const updatedImages = getImagesArray(prev.referenceImages).filter((_, idx) => idx !== indexToRemove);
-             return { ...prev, referenceImages: updatedImages };
-          });
-        };
-
-        const handleAnalyzeImages = async () => {
-          const currentImages = getImagesArray(formData.referenceImages);
-          if (currentImages.length === 0) {
-            showToast('請先上傳至少一張實務照片供 AI 辨識！');
-            return;
-          }
-          if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
-            showToast('❌ 請先在程式碼中填寫您的 Gemini API 金鑰！');
-            return;
-          }
-          
-          setIsAnalyzing(true);
-          showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
-
-          try {
-            const base64Images = currentImages.filter(img => img.startsWith('data:image'));
-            
-            if (base64Images.length === 0) {
-              throw new Error("沒有可解析的有效圖片");
-            }
-
-            const parts = [
-              { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
-                      "1. title: 簡短且明確的任務名稱 (字串)\n" +
-                      "2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n" +
-                      "3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n" +
-                      "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
-            ];
-
-            base64Images.forEach(base64Str => {
-               const base64Data = base64Str.split(',')[1];
-               const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
-               parts.push({
-                 inlineData: {
-                   mimeType: mimeType,
-                   data: base64Data
-                 }
-               });
-            });
-
-            const payload = {
-              contents: [{ parts: parts }],
-              generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "OBJECT",
-                  properties: {
-                    title: { type: "STRING" },
-                    category: { type: "STRING" },
-                    reminderTarget: { type: "STRING" },
-                    details: { type: "STRING" }
-                  }
-                }
-              }
-            };
-
-            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text) {
-              const result = JSON.parse(text);
-              setFormData(prev => ({
-                ...prev,
-                title: result.title || prev.title,
-                category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
-                reminderTarget: result.reminderTarget || prev.reminderTarget,
-                details: result.details || prev.details
-              }));
-              showToast('✨ AI 解析成功！已為您自動填入表單。');
-            } else {
-               throw new Error("API return empty text");
-            }
-          } catch (error) {
-            console.error("AI Analysis Error:", error);
-            showToast('❌ AI 解析失敗，可能是網路問題或圖片無法辨識。請手動填寫。');
-          } finally {
-            setIsAnalyzing(false);
-          }
-        };
-
-        const handleSubmit = (e) => {
-          e.preventDefault();
-          if (!formData.title.trim() || !formData.details.trim()) return;
-          handleSaveItem(formData);
-        };
-
-        const currentImages = getImagesArray(formData.referenceImages);
+      const renderItemForm = () => {
+        const currentImages = formData.referenceImages || [];
 
         return (
           <div className="space-y-6">
@@ -1085,10 +1064,10 @@
                 {editingItem ? <Edit className="text-blue-600"/> : <Plus className="text-blue-600"/>} {editingItem ? '編輯業務筆記' : '新增業務筆記'}
               </h2>
               
-              <form onSubmit={handleSubmit} className="space-y-6">
+              <form onSubmit={handleFormSubmit} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-                  {/* 上傳圖片與 AI 辨識區塊移到最上方 */}
+                  {/* 上傳圖片與 AI 辨識區塊 */}
                   <div className="space-y-3 md:col-span-2 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 shadow-sm">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
                        <div>
@@ -1141,7 +1120,7 @@
                         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-3 pb-3">
                           {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
                           <p className="text-sm text-indigo-600 font-medium">
-                            {isUploading ? '圖片壓縮與處理中...' : `點擊此處上傳照片 (已選 ${currentImages.length}/5 張)`}
+                            {isUploading ? '圖片處理中...' : `點擊此處上傳照片 (已選 ${currentImages.length}/5 張)`}
                           </p>
                           <p className="text-[10px] text-slate-400 mt-1">可以直接點擊框框，或按住 Ctrl 鍵一次選取多張</p>
                         </div>
@@ -1191,7 +1170,7 @@
         );
       };
 
-      const CategoryManager = () => (
+      const renderCategoryManager = () => (
         <div className="space-y-6">
           
           <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 rounded-xl shadow-lg border border-blue-500 text-white flex flex-col md:flex-row items-center justify-between gap-6">
@@ -1300,29 +1279,29 @@
           <main className="max-w-6xl mx-auto px-4 py-8 flex flex-col md:flex-row gap-8">
             <aside className="md:w-64 flex-shrink-0">
               <nav className="flex flex-col gap-2 bg-white p-4 rounded-xl shadow-sm border border-slate-100 sticky top-24">
-                <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
-                <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
-                <button onClick={() => { setActiveTab('form'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Plus size={20} />新增學到的知識</button>
+                <button onClick={() => { setActiveTab('dashboard'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
+                <button onClick={() => { setActiveTab('list'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
+                <button onClick={handleAddNew} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Plus size={20} />新增學到的知識</button>
                 
                 <div className="h-px bg-slate-100 my-2"></div>
                 
-                <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+                <button onClick={() => { setActiveTab('trash'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
                   <Trash size={20} />
                   垃圾桶
                   {trashedItems.length > 0 && (
                     <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>
                   )}
                 </button>
-                <button onClick={() => { setActiveTab('categories'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
+                <button onClick={() => { setActiveTab('categories'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
               </nav>
             </aside>
 
             <div className="flex-1 min-w-0">
-              {activeTab === 'dashboard' && <Dashboard />}
-              {activeTab === 'list' && <ItemList />}
-              {activeTab === 'form' && <ItemForm />}
-              {activeTab === 'trash' && <TrashBin />}
-              {activeTab === 'categories' && <CategoryManager />}
+              {activeTab === 'dashboard' && renderDashboard()}
+              {activeTab === 'list' && renderItemList()}
+              {activeTab === 'form' && renderItemForm()}
+              {activeTab === 'trash' && renderTrashBin()}
+              {activeTab === 'categories' && renderCategoryManager()}
             </div>
           </main>
           
