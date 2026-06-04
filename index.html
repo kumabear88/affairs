@@ -44,7 +44,7 @@
       User, LayoutDashboard, ListTodo, Edit, Trash2, FileText, Loader2,
       Settings, Tag, Archive, RotateCcw, Image as ImageIcon, Sparkles, BookOpen,
       Megaphone, Lightbulb, Download, UploadCloud, X, Trash, RefreshCw, FileDown,
-      Wand2, AlignLeft
+      Wand2, AlignLeft, Mail, Copy, FileCheck
     } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -54,6 +54,7 @@
     // 您的 Gemini API 金鑰
     // ==========================================
     let apiKey = "AIzaSyCqYDgnSoYBfuRoM8vTa3UzmCdss6U_21Y";
+    let aiModel = "gemini-1.5-flash"; // 發布外部環境時使用的正式模型
 
     // ==========================================
     // 您的 Firebase 資料庫設定
@@ -69,18 +70,18 @@
       measurementId: "G-169FTTX4GT"
     };
 
-    // 保留環境相容性
+    // 平台環境偵測與相容性處理
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
-    }
-    if (typeof __api_key !== 'undefined' && __api_key) {
-      apiKey = __api_key;
+      // ⚠️ 關鍵修復：在這個測試平台中，必須強制清空金鑰，並使用內部專用預覽模型
+      // 平台底層代理會自動攔截空字串並補上高權限系統金鑰來執行
+      apiKey = "";
+      aiModel = "gemini-2.5-flash-preview-09-2025";
     }
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
-    // 在 Ezpage 上統一使用 ezpage-deployment 作為儲存路徑前綴
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'ezpage-deployment'; 
 
     const DEFAULT_CATEGORIES = [
@@ -111,7 +112,8 @@
         try {
           const response = await fetch(url, options);
           if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error?.message || `HTTP 連線錯誤 (${response.status})`);
           }
           return await response.json();
         } catch (err) {
@@ -138,7 +140,7 @@
         reminderTarget: '',
         referenceImages: []
       });
-      const [rawNote, setRawNote] = useState(''); // 新增：供使用者貼上雜亂草稿的狀態
+      const [rawNote, setRawNote] = useState(''); 
       const [isUploading, setIsUploading] = useState(false);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -155,11 +157,31 @@
       const [toastMsg, setToastMsg] = useState('');
       const [isProcessing, setIsProcessing] = useState(false);
 
+      const [draftModal, setDraftModal] = useState({ isOpen: false, title: '', content: '', loading: false });
+
       const today = new Date().toISOString().split('T')[0];
 
       const showToast = (msg) => {
         setToastMsg(msg);
-        setTimeout(() => setToastMsg(''), 3000);
+        setTimeout(() => setToastMsg(''), 4000);
+      };
+
+      const handleCopy = (text) => {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.top = "0";
+        textArea.style.left = "0";
+        textArea.style.position = "fixed";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          showToast('✨ 已複製到剪貼簿！');
+        } catch (err) {
+          showToast('❌ 複製失敗，請手動全選複製。');
+        }
+        document.body.removeChild(textArea);
       };
 
       useEffect(() => {
@@ -173,7 +195,7 @@
           } catch (error) {
             console.error("Auth error:", error);
             setLoading(false);
-            showToast('網路連線或金鑰錯誤，無法啟用雲端儲存！');
+            showToast('網路連線或 Firebase 金鑰錯誤，無法啟用雲端儲存！');
           }
         };
         initAuth();
@@ -309,6 +331,63 @@
         });
       };
 
+      // ----------------------------------------------------
+      // LLM AI 延伸功能區塊
+      // ----------------------------------------------------
+
+      const handleDraftEmail = async (item) => {
+        setDraftModal({ isOpen: true, title: `✨ AI 通知信草擬：${item.title}`, content: '', loading: true });
+        try {
+          const prompt = `你是一位專業的國小總務處事務組長。請根據以下業務內容，撰寫一封禮貌的公務通知信給相關單位或人員。\n\n收件人/提醒對象：${item.reminderTarget || '相關同仁'}\n業務名稱：${item.title}\n業務細節：${item.details}\n\n請直接輸出信件內容，包含主旨與內文。不需要額外的問候語，語氣要專業、友善且精煉。`;
+          const payload = { contents: [{ parts: [{ text: prompt }] }] };
+
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            setDraftModal(prev => ({ ...prev, content: text, loading: false }));
+          } else {
+            throw new Error("AI 未回傳任何文字結果。");
+          }
+        } catch (error) {
+          console.error("AI Error:", error);
+          setDraftModal(prev => ({ ...prev, content: `❌ 產生失敗：${error.message}`, loading: false }));
+        }
+      };
+
+      const handleGenerateReport = async (upcomingItems) => {
+        setDraftModal({ isOpen: true, title: `✨ 本週業務智能匯報`, content: '', loading: true });
+        try {
+          let taskListStr = upcomingItems.map(t => `- [${t.category}] ${t.title} (期限: ${t.dueDate || '無'}, 對象: ${t.reminderTarget || '無'})`).join('\n');
+          if(!taskListStr) taskListStr = "目前無緊急或逾期事項。";
+
+          const prompt = `你是一位專業的國小總務處 AI 秘書。以下是本週需要關注的待辦與逾期事項清單：\n${taskListStr}\n\n請幫我寫一段簡短、專業的「每週業務匯報草稿」，這份報告會直接提交給總務主任或校長。請包含：\n1. 開頭問候與本週狀況概述\n2. 需特別關注的緊急/逾期事項彙整（若無則寫整體進度良好）\n3. 結語，展現積極負責的態度。`;
+          const payload = { contents: [{ parts: [{ text: prompt }] }] };
+
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            setDraftModal(prev => ({ ...prev, content: text, loading: false }));
+          } else {
+            throw new Error("AI 未回傳任何文字結果。");
+          }
+        } catch (error) {
+          console.error("AI Error:", error);
+          setDraftModal(prev => ({ ...prev, content: `❌ 產生失敗：${error.message}`, loading: false }));
+        }
+      };
+
+      // ----------------------------------------------------
+      
       const downloadBackup = (currentItems, currentTips, currentTrashed) => {
         const dateStr = new Date().toLocaleString('zh-TW');
         const safeDate = new Date().toISOString().split('T')[0];
@@ -370,10 +449,7 @@
       };
 
       const handleRestoreDefaultTasks = async () => {
-        if (!user) {
-          showToast('請先檢查網路或金鑰連線！');
-          return;
-        }
+        if (!user) return;
         const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
@@ -413,10 +489,7 @@
       };
 
       const handleSaveItem = async (newItemData) => {
-        if (!user) {
-          showToast('尚未連線資料庫，請檢查設定！');
-          return;
-        }
+        if (!user) return;
         try {
           if (editingItem && editingItem.id) {
             const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
@@ -543,7 +616,7 @@
           showToast(`✅ 成功上傳了 ${newBase64s.length} 張照片！`);
         } catch (error) {
           console.error("Image upload error:", error);
-          showToast('❌ 圖片壓縮或上傳失敗，請重試。');
+          showToast('❌ 圖片上傳失敗，請重試。');
         } finally { 
           setIsUploading(false);
           fileInput.value = ''; 
@@ -557,23 +630,18 @@
         }));
       };
 
-      // == 更新：AI 辨識現在主要分析「草稿文字」，並可選是否包含「圖片」 ==
       const handleAnalyzeNotes = async () => {
         const currentImages = formData.referenceImages || [];
         if (!rawNote.trim() && currentImages.length === 0) {
           showToast('請先輸入「筆記草稿」或「上傳實務照片」供 AI 整理！');
           return;
         }
-        if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
-          showToast('❌ 請先在程式碼中填寫您的 Gemini API 金鑰！');
-          return;
-        }
         
         setIsAnalyzing(true);
-        showToast('🤖 AI 正在努力閱讀您的草稿並進行分類排版，請稍候...');
+        showToast('🤖 AI 正在努力閱讀草稿並進行排版，請稍候...');
 
         try {
-          let promptText = `你是一位專業的國小總務處事務組長助手。請幫我將以下的「粗略筆記」自動整理成一份格式清晰的業務筆記。\n\n`;
+          let promptText = `你是一位專業的國小總務處事務組長助手。請幫我將以下的「粗略筆記」或「照片」自動整理成一份格式清晰的業務筆記。\n\n`;
           promptText += `請提供 JSON 格式的回應，包含以下欄位：\n` +
                         `1. title: 簡短且明確的任務名稱 (字串)\n` +
                         `2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n` +
@@ -588,7 +656,6 @@
 
           const parts = [{ text: promptText }];
 
-          // 若有上傳圖片，一併丟給 AI
           const base64Images = currentImages.filter(img => img.startsWith('data:image'));
           base64Images.forEach(base64Str => {
              const base64Data = base64Str.split(',')[1];
@@ -612,7 +679,7 @@
             }
           };
 
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -620,21 +687,33 @@
 
           const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) {
-            const result = JSON.parse(text);
-            setFormData(prev => ({
-              ...prev,
-              title: result.title || prev.title,
-              category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
-              reminderTarget: result.reminderTarget || prev.reminderTarget,
-              details: result.details || prev.details
-            }));
-            showToast('✨ AI 整理成功！已為您自動填入下方的正式表單中。');
+            let cleanText = text.trim();
+            const regex = new RegExp('`{3}(?:json)?([\\s\\S]*?)`{3}');
+            const match = cleanText.match(regex);
+            if (match) {
+              cleanText = match[1].trim();
+            }
+            
+            try {
+              const result = JSON.parse(cleanText);
+              setFormData(prev => ({
+                ...prev,
+                title: result.title || prev.title,
+                category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
+                reminderTarget: result.reminderTarget || prev.reminderTarget,
+                details: result.details || prev.details
+              }));
+              showToast('✨ AI 整理成功！已為您自動填入下方的正式表單中。');
+            } catch (parseError) {
+              console.error("JSON Parse Error:", parseError, "Raw Text:", text);
+              throw new Error("AI 回傳的資料格式有誤，無法套用。");
+            }
           } else {
-             throw new Error("API return empty text");
+             throw new Error("AI 未回傳任何文字結果。");
           }
         } catch (error) {
           console.error("AI Analysis Error:", error);
-          showToast('❌ AI 整理失敗，可能是網路問題或內容無法辨識。請手動填寫。');
+          showToast(`❌ 整理失敗：${error.message}`);
         } finally {
           setIsAnalyzing(false);
         }
@@ -818,11 +897,19 @@
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+              <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-center gap-4">
                 <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                   <AlertCircle size={20} className="text-rose-500"/> 緊急與待辦事項提醒
                 </h2>
-                <span className="text-xs text-slate-500">系統時間：{today}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-500 hidden md:inline">系統時間：{today}</span>
+                  <button 
+                    onClick={() => handleGenerateReport(upcomingItems)} 
+                    className="flex items-center gap-1.5 bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-2 rounded-lg font-bold text-xs transition-colors shadow-sm"
+                  >
+                    <Sparkles size={14} /> ✨ 產生本週業務匯報
+                  </button>
+                </div>
               </div>
               <div className="p-0">
                 {upcomingItems.length === 0 ? (
@@ -864,6 +951,11 @@
                           </div>
                         </div>
                         <div className="flex gap-2 self-stretch sm:self-auto justify-end">
+                          {item.reminderTarget && (
+                            <button onClick={() => handleDraftEmail(item)} className="flex items-center gap-1 p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-indigo-100 shadow-sm text-xs font-bold mr-1" title="AI 草擬通知信">
+                              <Sparkles size={14}/> 寫信
+                            </button>
+                          )}
                           <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100">
                             <Edit size={18} />
                           </button>
@@ -932,6 +1024,11 @@
                       )}
                     </div>
                     <div className="flex gap-1">
+                      {item.reminderTarget && (
+                        <button onClick={() => handleDraftEmail(item)} className="px-2 py-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded border border-indigo-100 transition-colors flex items-center gap-1 text-xs font-bold shadow-sm mr-1" title="AI 草擬通知信">
+                          <Sparkles size={14}/> 寫通知信
+                        </button>
+                      )}
                       <button onClick={() => handleEdit(item)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded border border-transparent hover:border-blue-100 transition-colors" title="編輯這筆業務並重新上傳照片">
                         <Edit size={16} />
                       </button>
@@ -958,8 +1055,8 @@
 
                   {/* 多圖預覽網格區塊 */}
                   {images.length > 0 && (
-                    <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm">
-                      <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold">
+                    <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm relative z-0">
+                      <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold rounded-t-lg">
                         <ImageIcon size={16} className="mr-2 text-indigo-500" />
                         實務照片對照 (共 {images.length} 項)
                       </div>
@@ -968,12 +1065,12 @@
                           {images.map((imgSrc, imgIdx) => {
                             const isImageURL = imgSrc.startsWith('data:image') || imgSrc.startsWith('http');
                             return (
-                              <div key={imgIdx} className="flex flex-col items-center bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative h-full justify-center overflow-hidden">
+                              <div key={imgIdx} className="flex flex-col items-center bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative h-full justify-center group transition-all duration-300 hover:z-50 hover:shadow-2xl">
                                 {isImageURL ? (
                                   <img 
                                     src={imgSrc} 
                                     alt={`參考圖檔-${imgIdx + 1}`} 
-                                    className="max-w-full h-auto max-h-[220px] object-contain rounded"
+                                    className="max-w-full h-auto max-h-[220px] object-contain rounded transition-transform duration-300 ease-in-out group-hover:scale-[1.8] cursor-zoom-in"
                                     onError={(e) => {
                                       e.target.style.display = 'none';
                                       e.target.nextSibling.style.display = 'flex';
@@ -1128,9 +1225,9 @@
                         {currentImages.map((imgSrc, idx) => {
                           const isBase64 = imgSrc.startsWith('data:image');
                           return (
-                            <div key={idx} className="relative inline-block border border-slate-200 rounded-lg p-1 bg-slate-50 shadow-sm">
+                            <div key={idx} className="relative inline-block border border-slate-200 rounded-lg p-1 bg-slate-50 shadow-sm group hover:z-50 transition-all">
                               {isBase64 ? (
-                                <img src={imgSrc} alt={`預覽-${idx}`} className="h-20 w-20 object-cover rounded-md" />
+                                <img src={imgSrc} alt={`預覽-${idx}`} className="h-20 w-20 object-cover rounded-md transition-transform duration-300 ease-in-out group-hover:scale-[2.5] group-hover:shadow-2xl cursor-zoom-in" />
                               ) : (
                                 <div className="h-20 w-20 flex flex-col items-center justify-center p-2 text-rose-700 font-mono text-[10px] break-all border border-rose-200 rounded-md bg-rose-50 relative">
                                   <ImageIcon size={16} className="mb-1 text-rose-400" />
@@ -1312,20 +1409,20 @@
           <main className="max-w-6xl mx-auto px-4 py-8 flex flex-col md:flex-row gap-8">
             <aside className="md:w-64 flex-shrink-0">
               <nav className="flex flex-col gap-2 bg-white p-4 rounded-xl shadow-sm border border-slate-100 sticky top-24">
-                <button onClick={() => { setActiveTab('dashboard'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
-                <button onClick={() => { setActiveTab('list'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
+                <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
+                <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
                 <button onClick={handleAddNew} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Plus size={20} />新增學到的知識</button>
                 
                 <div className="h-px bg-slate-100 my-2"></div>
                 
-                <button onClick={() => { setActiveTab('trash'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+                <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
                   <Trash size={20} />
                   垃圾桶
                   {trashedItems.length > 0 && (
                     <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>
                   )}
                 </button>
-                <button onClick={() => { setActiveTab('categories'); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
+                <button onClick={() => { setActiveTab('categories'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
               </nav>
             </aside>
 
@@ -1343,6 +1440,46 @@
               <CheckCircle2 size={18} className="mr-3 text-emerald-400" /><span className="font-medium text-sm">{toastMsg}</span>
             </div>
           )}
+
+          {/* AI 功能的彈出視窗 */}
+          {draftModal.isOpen && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-indigo-50/80">
+                  <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2">
+                    <Sparkles className="text-indigo-500" size={20} />
+                    {draftModal.title}
+                  </h3>
+                  <button onClick={() => setDraftModal({ isOpen: false, title: '', content: '', loading: false })} className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-indigo-100 transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
+                  {draftModal.loading ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-slate-500">
+                      <Loader2 className="animate-spin w-10 h-10 text-indigo-500 mb-4" />
+                      <p className="font-bold text-indigo-600 animate-pulse">AI 正在為您撰寫內容中，請稍候...</p>
+                    </div>
+                  ) : (
+                    <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700 bg-slate-50 p-6 rounded-xl border border-slate-200">
+                      {draftModal.content}
+                    </div>
+                  )}
+                </div>
+                {!draftModal.loading && draftModal.content && !draftModal.content.startsWith('❌') && (
+                  <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end">
+                    <button 
+                      onClick={() => handleCopy(draftModal.content)}
+                      className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md"
+                    >
+                      <Copy size={18} /> 複製文字
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
         </div>
       );
     }
