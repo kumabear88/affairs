@@ -30,6 +30,11 @@
     .custom-scrollbar::-webkit-scrollbar { width: 6px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
     .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+    /* Ensure the file input is clickable but invisible */
+    .file-input-wrapper { position: relative; overflow: hidden; display: inline-block; width: 100%; cursor: pointer;}
+    .file-input-wrapper input[type=file] {
+      font-size: 100px; position: absolute; left: 0; top: 0; opacity: 0; cursor: pointer; height: 100%; width: 100%;
+    }
   </style>
 </head>
 <body>
@@ -37,7 +42,7 @@
 
   <!-- 主程式邏輯 -->
   <script type="text/babel" data-type="module">
-    import React, { useState, useMemo, useEffect } from 'react';
+    import React, { useState, useMemo, useEffect, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
     import { 
       Search, Plus, Calendar, Clock, AlertCircle, CheckCircle2, 
@@ -69,7 +74,7 @@
       measurementId: "G-169FTTX4GT"
     };
 
-    // 保留環境相容性（如果您偶爾在我們這個編輯器預覽時才不會出錯）
+    // 保留環境相容性
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
     }
@@ -767,6 +772,7 @@
                     {item.details}
                   </div>
 
+                  {/* 多圖預覽網格區塊 */}
                   {images.length > 0 && (
                     <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm">
                       <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold">
@@ -886,7 +892,7 @@
 
         useEffect(() => {
           if (editingItem) {
-            setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem.referenceImages) }));
+            setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem) }));
           }
         }, [editingItem]);
 
@@ -897,7 +903,7 @@
             details: tpl.details,
             dueDate: today, 
             reminderTarget: tpl.reminderTarget,
-            referenceImages: getImagesArray(tpl.referenceImages)
+            referenceImages: getImagesArray(tpl)
           });
         };
 
@@ -913,7 +919,7 @@
 
           setIsUploading(true);
           try {
-            const currentImages = getImagesArray(formData.referenceImages);
+            const currentImages = formData.referenceImages || [];
             if (currentImages.length + files.length > 5) {
               showToast('一筆業務筆記最多只能上傳 5 張圖片！');
               setIsUploading(false);
@@ -932,12 +938,20 @@
         };
 
         const handleRemoveImage = (indexToRemove) => {
-          const updatedImages = getImagesArray(formData.referenceImages).filter((_, idx) => idx !== indexToRemove);
+          const updatedImages = (formData.referenceImages || []).filter((_, idx) => idx !== indexToRemove);
           setFormData(prev => ({ ...prev, referenceImages: updatedImages }));
         };
 
+        const handleSubmit = (e) => {
+          e.preventDefault();
+          if (!formData.title.trim() || !formData.details.trim()) return;
+          handleSaveItem(formData);
+        };
+
+        const currentImages = formData.referenceImages || [];
+
+        // --- AI 分析圖片功能 ---
         const handleAnalyzeImages = async () => {
-          const currentImages = getImagesArray(formData.referenceImages);
           if (currentImages.length === 0) {
             showToast('請先上傳至少一張實務照片供 AI 辨識！');
             return;
@@ -947,12 +961,14 @@
           showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
 
           try {
+            // 取出所有 base64 圖片 (過濾掉無法預覽的舊檔名)
             const base64Images = currentImages.filter(img => img.startsWith('data:image'));
             
             if (base64Images.length === 0) {
               throw new Error("沒有可解析的有效圖片");
             }
 
+            // 準備 Gemini API Payload
             const parts = [
               { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
                       "1. title: 簡短且明確的任務名稱 (字串)\n" +
@@ -961,7 +977,9 @@
                       "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
             ];
 
+            // 將圖片加入 Payload
             base64Images.forEach(base64Str => {
+               // 移除 'data:image/jpeg;base64,' 前綴
                const base64Data = base64Str.split(',')[1];
                const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
                parts.push({
@@ -1016,14 +1034,6 @@
           }
         };
 
-        const handleSubmit = (e) => {
-          e.preventDefault();
-          if (!formData.title.trim() || !formData.details.trim()) return;
-          handleSaveItem(formData);
-        };
-
-        const currentImages = getImagesArray(formData.referenceImages);
-
         return (
           <div className="space-y-6">
             {!editingItem && (
@@ -1031,7 +1041,7 @@
                 <h3 className="text-base font-bold text-slate-800 mb-3 flex items-center gap-2"><Sparkles size={18} className="text-blue-600" />新手推薦！快速帶入例行公務範本</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {TASK_TEMPLATES.map(tpl => (
-                    <button key={tpl.id} type="button" onClick={() => handleApplyTemplate(tpl)} className="flex items-start text-left p-3 bg-white rounded-lg border border-blue-200/60 hover:border-blue-50 hover:shadow-sm transition-all group">
+                    <button key={tpl.id} type="button" onClick={() => handleApplyTemplate(tpl)} className="flex items-start text-left p-3 bg-white rounded-lg border border-blue-200/60 hover:border-blue-500 hover:shadow-sm transition-all group">
                       <div className="mr-3 p-2 bg-blue-50 rounded-md text-blue-600 group-hover:bg-blue-100"><FileText size={16} /></div>
                       <div>
                         <h4 className="text-sm font-bold text-slate-800 group-hover:text-blue-700">{tpl.title}</h4>
@@ -1090,13 +1100,15 @@
                       </div>
                     )}
                     {currentImages.length < 5 ? (
-                      <label className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${isUploading ? 'bg-indigo-100 border-indigo-400' : 'bg-white hover:bg-indigo-50 border-indigo-300'}`}>
-                        <div className="flex flex-col items-center justify-center pt-3 pb-3">
-                          {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
-                          <p className="text-sm text-indigo-600 font-medium">{isUploading ? '圖片壓縮與處理中...' : `點擊或拖曳照片上傳 (已選 ${currentImages.length}/5 張)`}</p>
+                      <div className="file-input-wrapper">
+                        <div className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-lg transition-colors ${isUploading ? 'bg-indigo-100 border-indigo-400' : 'bg-white hover:bg-indigo-50 border-indigo-300'}`}>
+                          <div className="flex flex-col items-center justify-center pt-3 pb-3">
+                            {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
+                            <p className="text-sm text-indigo-600 font-medium">{isUploading ? '圖片壓縮與處理中...' : `點擊選擇照片上傳 (已選 ${currentImages.length}/5 張)`}</p>
+                          </div>
                         </div>
-                        <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} disabled={isUploading || isAnalyzing} multiple />
-                      </label>
+                        <input type="file" accept="image/*" onChange={handleImageUpload} disabled={isUploading || isAnalyzing} multiple />
+                      </div>
                     ) : (
                       <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center gap-2">
                         <AlertCircle size={16} /><span>您已達到單筆業務 5 張圖片的上傳上限。</span>
@@ -1128,7 +1140,7 @@
 
                   <div className="space-y-2 md:col-span-2">
                     <label className="block text-sm font-bold text-slate-700">詳細流程與注意事項 <span className="text-rose-500">*</span></label>
-                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你自動分類寫筆記..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
+                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你寫..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
                   </div>
                 </div>
 
