@@ -44,16 +44,16 @@
       User, LayoutDashboard, ListTodo, Edit, Trash2, FileText, Loader2,
       Settings, Tag, Archive, RotateCcw, Image as ImageIcon, Sparkles, BookOpen,
       Megaphone, Lightbulb, Download, UploadCloud, X, Trash, RefreshCw, FileDown,
-      Wand2, AlignLeft, Mail, Copy, FileCheck
+      Wand2, AlignLeft, Mail, Copy, FileCheck, Key
     } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
     // ==========================================
-    // 您的 Gemini API 金鑰
+    // 預設的 Gemini API 金鑰 (可能會因權限不足而失效)
     // ==========================================
-    let apiKey = "AIzaSyCqYDgnSoYBfuRoM8vTa3UzmCdss6U_21Y";
+    let defaultApiKey = "AIzaSyCqYDgnSoYBfuRoM8vTa3UzmCdss6U_21Y";
 
     // ==========================================
     // 您的 Firebase 資料庫設定
@@ -72,9 +72,6 @@
     // 保留環境相容性
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
-    }
-    if (typeof __api_key !== 'undefined' && __api_key) {
-      apiKey = __api_key;
     }
 
     const app = initializeApp(firebaseConfig);
@@ -157,87 +154,77 @@
 
       const [draftModal, setDraftModal] = useState({ isOpen: false, title: '', content: '', loading: false });
 
+      // AI 金鑰管理狀態
+      const [customApiKey, setCustomApiKey] = useState('');
+      const [inputApiKey, setInputApiKey] = useState('');
+
       const today = new Date().toISOString().split('T')[0];
-
-      // ==========================================
-      // ✨ 終極修復：自動降級備援系統 (Auto-Fallback)
-      // 如果 1.5 模型在您的 GCP 權限中未開放 (404 Not Found)
-      // 系統會自動測試並降級到您支援的版本，直到成功為止！
-      // ==========================================
-      const callGeminiAPI = async (partsArray, isJson = false) => {
-        if (!apiKey) throw new Error("API 金鑰遺失，請檢查設定。");
-
-        // 將所有可能的模型依序排列 (由新到舊)
-        const modelsToTry = [
-          "gemini-1.5-flash",
-          "gemini-1.5-pro",
-          "gemini-1.0-pro",
-          "gemini-pro",
-          "gemini-2.5-flash-preview-09-2025" 
-        ];
-
-        let lastError = null;
-
-        for (const model of modelsToTry) {
-          try {
-            let currentParts = [...partsArray];
-            let isLegacyModel = model === "gemini-pro" || model === "gemini-1.0-pro";
-            
-            // 舊版模型 (1.0/pro) 不支援圖片，若降級到此必須過濾掉圖片部分以防報錯
-            if (isLegacyModel) {
-               currentParts = currentParts.filter(p => p.text);
-               if (currentParts.length === 0) {
-                   throw new Error("舊版模型不支援純圖片解析");
-               }
-            }
-
-            const payload = { contents: [{ parts: currentParts }] };
-
-            // 舊版模型不支援 JSON Schema，若使用舊版則不帶入此參數
-            if (isJson && !isLegacyModel) {
-              payload.generationConfig = {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "OBJECT",
-                  properties: {
-                    title: { type: "STRING" },
-                    category: { type: "STRING" },
-                    reminderTarget: { type: "STRING" },
-                    details: { type: "STRING" }
-                  }
-                }
-              };
-            }
-
-            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text) return text;
-            else throw new Error("回傳空白內容");
-
-          } catch (error) {
-            lastError = error;
-            console.warn(`[AI 降級系統] 模型 ${model} 嘗試失敗:`, error.message);
-            const errMsg = error.message.toLowerCase();
-            // 如果遇到模型找不到或不支援的錯誤，就繼續下一次迴圈嘗試舊模型
-            if (errMsg.includes("not found") || errMsg.includes("not supported") || errMsg.includes("404")) {
-              continue; 
-            } else {
-              // 若是金鑰無效(400)或權限錯誤(403)等其他錯誤，直接終止
-              throw error;
-            }
-          }
-        }
-        throw lastError || new Error("所有 AI 模型嘗試皆失敗，請確認 API 金鑰是否有效。");
-      };
 
       const showToast = (msg) => {
         setToastMsg(msg);
         setTimeout(() => setToastMsg(''), 4000);
+      };
+
+      // ==========================================
+      // ✨ 完美防呆版 AI 呼叫系統
+      // ==========================================
+      const callGeminiAPI = async (partsArray, isJson = false) => {
+        // 優先使用使用者自訂的金鑰，否則使用預設金鑰
+        let activeKey = customApiKey || defaultApiKey;
+        
+        // 若在開發平台環境預覽，強制使用系統金鑰
+        if (typeof __firebase_config !== 'undefined' && typeof __api_key !== 'undefined' && __api_key) {
+           activeKey = __api_key;
+        }
+
+        if (!activeKey || activeKey === "請貼上您的_GEMINI_API_金鑰") {
+          throw new Error("系統找不到有效的 API 金鑰，請至「系統設定」頁面填寫。");
+        }
+
+        // 外部環境固定使用 1.5-flash，內部預覽使用 preview
+        const isLocalPreview = typeof __firebase_config !== 'undefined';
+        const aiModel = isLocalPreview ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
+
+        const payload = { contents: [{ parts: partsArray }] };
+
+        if (isJson) {
+          payload.generationConfig = {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                title: { type: "STRING" },
+                category: { type: "STRING" },
+                reminderTarget: { type: "STRING" },
+                details: { type: "STRING" }
+              }
+            }
+          };
+        }
+
+        try {
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${activeKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return text;
+          else throw new Error("AI 回傳空白內容");
+
+        } catch (error) {
+          console.error("[AI API 錯誤]", error);
+          const errMsg = error.message.toLowerCase();
+          
+          if (errMsg.includes("not found") || errMsg.includes("not supported")) {
+            throw new Error("您目前的 API 金鑰權限不足！請至「Google AI Studio」申請全新的金鑰，並到左側的「系統設定」中更新。");
+          }
+          if (errMsg.includes("api key not valid")) {
+            throw new Error("您輸入的 API 金鑰無效，請至系統設定檢查是否貼錯了。");
+          }
+          throw error;
+        }
       };
 
       const handleCopy = (text) => {
@@ -305,6 +292,12 @@
             const data = docSnap.data();
             setCategories(data.list || DEFAULT_CATEGORIES);
             setArchivedCategories(data.archived || []);
+            
+            // 讀取自訂 API 金鑰
+            if (data.geminiApiKey) {
+              setCustomApiKey(data.geminiApiKey);
+              setInputApiKey(data.geminiApiKey);
+            }
           } else {
             setDoc(catRef, { list: DEFAULT_CATEGORIES, archived: [] }, { merge: true });
             setCategories(DEFAULT_CATEGORIES);
@@ -405,7 +398,7 @@
       };
 
       // ----------------------------------------------------
-      // LLM AI 延伸功能
+      // LLM AI 功能
       // ----------------------------------------------------
 
       const handleDraftEmail = async (item) => {
@@ -469,7 +462,6 @@
           const responseText = await callGeminiAPI(parts, true);
 
           let cleanText = responseText.trim();
-          // 使用安全的 RegExp 替換 Markdown 區塊，避免解析崩潰
           const regex = new RegExp('`{3}(?:json)?([\\s\\S]*?)`{3}');
           const match = cleanText.match(regex);
           if (match) {
@@ -480,12 +472,11 @@
           try {
             result = JSON.parse(cleanText);
           } catch (e) {
-            // 防呆機制：若被非標準字元包覆，強行提取大括號內容
             const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 result = JSON.parse(jsonMatch[0]);
             } else {
-                throw e; // 無法提取
+                throw e; 
             }
           }
           
@@ -767,6 +758,18 @@
           reminderTarget: tpl.reminderTarget,
           referenceImages: getImagesArray(tpl.referenceImages)
         });
+      };
+
+      const handleSaveApiKey = async () => {
+        if (!user) return;
+        try {
+          const metaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+          await setDoc(metaRef, { geminiApiKey: inputApiKey.trim() }, { merge: true });
+          setCustomApiKey(inputApiKey.trim());
+          showToast('✅ AI 金鑰已成功儲存！請重試 AI 功能。');
+        } catch (error) {
+          showToast('❌ 金鑰儲存失敗，請檢查網路。');
+        }
       };
 
       const handleAddCategory = async (e) => {
@@ -1336,6 +1339,35 @@
       const renderCategoryManager = () => (
         <div className="space-y-6">
           
+          {/* ✨ 專屬金鑰設定區塊 */}
+          <div className="bg-white p-6 md:p-8 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
+            <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center border-b pb-4">
+              <Key className="mr-3 text-indigo-600" />
+              AI 智慧助理設定 (金鑰管理)
+            </h2>
+            <p className="text-sm text-slate-500 mb-4">
+              若 AI 功能出現「權限不足」，代表您當前的金鑰未開通此服務。請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存。
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input 
+                type="password" 
+                value={inputApiKey}
+                onChange={(e) => setInputApiKey(e.target.value)}
+                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AIzaSy...)"}
+                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none font-mono text-sm"
+              />
+              <button 
+                onClick={handleSaveApiKey}
+                disabled={!inputApiKey.trim()}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
+              >
+                <CheckCircle2 size={16} /> 儲存金鑰
+              </button>
+            </div>
+            {customApiKey && <p className="text-xs text-emerald-600 mt-3 font-bold flex items-center"><CheckCircle2 size={14} className="mr-1"/> 目前已成功套用您的專屬 AI 金鑰。</p>}
+          </div>
+
           <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 rounded-xl shadow-lg border border-blue-500 text-white flex flex-col md:flex-row items-center justify-between gap-6">
             <div>
               <h2 className="text-2xl font-bold flex items-center gap-2 mb-2">
