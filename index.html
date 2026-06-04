@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>事務組長業務系統 (AI 智慧版)</title>
+  <title>事務組長業務系統 (Ezpage 最新穩定版)</title>
   
   <!-- 載入 Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -72,7 +72,7 @@
     // 保留環境相容性
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
-      // 在目前的測試平台預覽時，必須強制清空金鑰以使用系統預設權限
+      // 若在測試環境預覽，強制清空以使用系統全能金鑰
       apiKey = "";
     } else if (typeof __api_key !== 'undefined' && __api_key) {
       apiKey = __api_key;
@@ -156,16 +156,73 @@
       const [toastMsg, setToastMsg] = useState('');
       const [isProcessing, setIsProcessing] = useState(false);
 
-      // AI 草稿信件/報告的彈窗狀態
       const [draftModal, setDraftModal] = useState({ isOpen: false, title: '', content: '', loading: false });
 
       const today = new Date().toISOString().split('T')[0];
 
-      // 取得當下應該使用的 AI 模型 (修正 not found 錯誤)
-      const getAiModelName = () => {
+      // ==========================================
+      // ✨ 核心修復：AI 自動降級備援機制
+      // 解決因金鑰權限不同導致的 404 / Not Found 報錯
+      // ==========================================
+      const callGeminiAPI = async (partsArray, isJson = false) => {
+        if (!apiKey) throw new Error("請先在程式碼中填寫您的 Gemini API 金鑰！");
+
         const isLocalPreview = typeof __firebase_config !== 'undefined';
-        // 對外環境使用 gemini-1.5-flash-latest，解決模型找不到的問題
-        return isLocalPreview ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash-latest";
+        
+        // 自動降級清單：優先用最新 1.5 系列，若權限不足自動退回 1.0 (gemini-pro)
+        const modelsToTry = isLocalPreview
+          ? ["gemini-2.5-flash-preview-09-2025"]
+          : ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"];
+
+        const payload = { contents: [{ parts: partsArray }] };
+
+        if (isJson) {
+          payload.generationConfig = {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                title: { type: "STRING" },
+                category: { type: "STRING" },
+                reminderTarget: { type: "STRING" },
+                details: { type: "STRING" }
+              }
+            }
+          };
+        }
+
+        let lastError = null;
+        for (const model of modelsToTry) {
+          try {
+            // gemini-pro (舊版) 不支援圖片輸入，若降級到此模型需剃除圖片以防報錯
+            let finalPayload = payload;
+            if (model === "gemini-pro") {
+               const textOnlyParts = partsArray.filter(p => p.text);
+               finalPayload = { contents: [{ parts: textOnlyParts }] };
+            }
+
+            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(finalPayload)
+            });
+
+            const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) return text;
+            else throw new Error("AI 未回傳任何文字結果。");
+
+          } catch (error) {
+            lastError = error;
+            console.warn(`[自動降級系統] 模型 ${model} 呼叫失敗:`, error.message);
+            // 只要是 "not found" (404) 或不支援，就跳過嘗試下一個更舊的模型
+            if (error.message.includes("not found") || error.message.includes("not supported") || error.message.includes("404")) {
+              continue;
+            } else {
+              throw error; // 若是金鑰無效或額度耗盡，直接拋出錯誤
+            }
+          }
+        }
+        throw lastError || new Error("您的金鑰沒有權限使用任何 AI 模型。");
       };
 
       const showToast = (msg) => {
@@ -291,8 +348,9 @@
         return { status: 'safe', color: 'bg-emerald-50 text-emerald-700 border border-emerald-200', text: '時間充裕' };
       };
 
+      // 圖片壓縮優化：增強處理機制，防止失敗時程式崩潰
       const compressImage = (file) => {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
           const reader = new FileReader();
           reader.readAsDataURL(file);
           reader.onload = (event) => {
@@ -322,48 +380,33 @@
                 ctx.drawImage(img, 0, 0, width, height);
                 
                 const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-                if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 50) {
-                  resolve(rawBase64);
-                } else {
+                if (dataUrl && dataUrl.length > 50 && dataUrl !== 'data:,') {
                   resolve(dataUrl);
+                  return;
                 }
               } catch (err) {
-                console.warn("Canvas compression blocked, using original image.", err);
-                resolve(rawBase64);
+                console.warn("Canvas 壓縮遭阻擋，改用原始圖片", err);
               }
+              resolve(rawBase64); // Fallback
             };
-            img.onerror = () => resolve(''); 
+            img.onerror = () => resolve(rawBase64); 
           };
-          reader.onerror = () => resolve(''); 
+          reader.onerror = () => resolve(null); 
         });
       };
 
       // ----------------------------------------------------
-      // LLM AI 延伸功能區塊
+      // LLM AI 功能：利用新版 callGeminiAPI 處理
       // ----------------------------------------------------
 
       const handleDraftEmail = async (item) => {
         setDraftModal({ isOpen: true, title: `✨ AI 通知信草擬：${item.title}`, content: '', loading: true });
         try {
-          if (!apiKey) throw new Error("請先在程式碼中填寫您的 Gemini API 金鑰！");
-          
           const prompt = `你是一位專業的國小總務處事務組長。請根據以下業務內容，撰寫一封禮貌的公務通知信給相關單位或人員。\n\n收件人/提醒對象：${item.reminderTarget || '相關同仁'}\n業務名稱：${item.title}\n業務細節：${item.details}\n\n請直接輸出信件內容，包含主旨與內文。不需要額外的問候語，語氣要專業、友善且精煉。`;
-          const payload = { contents: [{ parts: [{ text: prompt }] }] };
-
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-
-          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            setDraftModal(prev => ({ ...prev, content: text, loading: false }));
-          } else {
-            throw new Error("AI 未回傳任何文字結果。");
-          }
+          
+          const text = await callGeminiAPI([{ text: prompt }], false);
+          setDraftModal(prev => ({ ...prev, content: text, loading: false }));
         } catch (error) {
-          console.error("AI Error:", error);
           setDraftModal(prev => ({ ...prev, content: `❌ 產生失敗：${error.message}`, loading: false }));
         }
       };
@@ -371,29 +414,78 @@
       const handleGenerateReport = async (upcomingItems) => {
         setDraftModal({ isOpen: true, title: `✨ 本週業務智能匯報`, content: '', loading: true });
         try {
-          if (!apiKey) throw new Error("請先在程式碼中填寫您的 Gemini API 金鑰！");
-
           let taskListStr = upcomingItems.map(t => `- [${t.category}] ${t.title} (期限: ${t.dueDate || '無'}, 對象: ${t.reminderTarget || '無'})`).join('\n');
           if(!taskListStr) taskListStr = "目前無緊急或逾期事項。";
 
           const prompt = `你是一位專業的國小總務處 AI 秘書。以下是本週需要關注的待辦與逾期事項清單：\n${taskListStr}\n\n請幫我寫一段簡短、專業的「每週業務匯報草稿」，這份報告會直接提交給總務主任或校長。請包含：\n1. 開頭問候與本週狀況概述\n2. 需特別關注的緊急/逾期事項彙整（若無則寫整體進度良好）\n3. 結語，展現積極負責的態度。`;
-          const payload = { contents: [{ parts: [{ text: prompt }] }] };
+          
+          const text = await callGeminiAPI([{ text: prompt }], false);
+          setDraftModal(prev => ({ ...prev, content: text, loading: false }));
+        } catch (error) {
+          setDraftModal(prev => ({ ...prev, content: `❌ 產生失敗：${error.message}`, loading: false }));
+        }
+      };
 
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+      const handleAnalyzeNotes = async () => {
+        const currentImages = formData.referenceImages || [];
+        if (!rawNote.trim() && currentImages.length === 0) {
+          showToast('請先輸入「筆記草稿」或「上傳實務照片」供 AI 整理！');
+          return;
+        }
+        
+        setIsAnalyzing(true);
+        showToast('🤖 AI 正在努力閱讀草稿並進行排版，請稍候...');
+
+        try {
+          let promptText = `你是一位專業的國小總務處事務組長助手。請幫我將以下的「粗略筆記」或「照片」自動整理成一份格式清晰的業務筆記。\n\n`;
+          promptText += `請提供 JSON 格式的回應，包含以下欄位：\n` +
+                        `1. title: 簡短且明確的任務名稱 (字串)\n` +
+                        `2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n` +
+                        `3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n` +
+                        `4. details: 詳細流程步驟與注意事項（請用繁體中文，將草稿轉換成條列式、有條理的說明，若有提到金額或系統代碼請務必保留）\n\n`;
+          
+          if (rawNote.trim()) {
+            promptText += `以下是我的粗略筆記：\n${rawNote}\n`;
+          } else {
+            promptText += `(未提供文字草稿，請直接分析隨附的圖片內容來產出流程)\n`;
+          }
+
+          const parts = [{ text: promptText }];
+
+          const base64Images = currentImages.filter(img => img.startsWith('data:image'));
+          base64Images.forEach(base64Str => {
+             const base64Data = base64Str.split(',')[1];
+             const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
+             parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
           });
 
-          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            setDraftModal(prev => ({ ...prev, content: text, loading: false }));
-          } else {
-            throw new Error("AI 未回傳任何文字結果。");
+          const responseText = await callGeminiAPI(parts, true);
+
+          let cleanText = responseText.trim();
+          const regex = new RegExp('`{3}(?:json)?([\\s\\S]*?)`{3}');
+          const match = cleanText.match(regex);
+          if (match) {
+            cleanText = match[1].trim();
+          }
+          
+          try {
+            const result = JSON.parse(cleanText);
+            setFormData(prev => ({
+              ...prev,
+              title: result.title || prev.title,
+              category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
+              reminderTarget: result.reminderTarget || prev.reminderTarget,
+              details: result.details || prev.details
+            }));
+            showToast('✨ AI 整理成功！已為您自動填入下方的正式表單中。');
+          } catch (parseError) {
+            console.error("JSON Parse Error:", parseError, "Raw Text:", responseText);
+            throw new Error("AI 回傳的資料格式有誤，無法自動套用。");
           }
         } catch (error) {
-          console.error("AI Error:", error);
-          setDraftModal(prev => ({ ...prev, content: `❌ 產生失敗：${error.message}`, loading: false }));
+          showToast(`❌ 整理失敗：${error.message}`);
+        } finally {
+          setIsAnalyzing(false);
         }
       };
 
@@ -609,10 +701,13 @@
         setIsUploading(true);
         try {
           const compressedPromises = files.map(file => compressImage(file));
-          const newBase64s = (await Promise.all(compressedPromises)).filter(s => s && s.startsWith('data:image'));
+          const results = await Promise.all(compressedPromises);
+          
+          // 增強型過濾，確保圖片正確壓縮
+          const newBase64s = results.filter(s => s && typeof s === 'string' && s.startsWith('data:image'));
           
           if (newBase64s.length === 0) {
-             throw new Error("圖片壓縮後無效");
+             throw new Error("圖片壓縮處理失敗");
           }
 
           setFormData(prev => {
@@ -639,99 +734,6 @@
           ...prev, 
           referenceImages: prev.referenceImages.filter((_, idx) => idx !== indexToRemove) 
         }));
-      };
-
-      const handleAnalyzeNotes = async () => {
-        const currentImages = formData.referenceImages || [];
-        if (!rawNote.trim() && currentImages.length === 0) {
-          showToast('請先輸入「筆記草稿」或「上傳實務照片」供 AI 整理！');
-          return;
-        }
-        if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
-          showToast('❌ 請先在程式碼中填寫您的 Gemini API 金鑰！');
-          return;
-        }
-        
-        setIsAnalyzing(true);
-        showToast('🤖 AI 正在努力閱讀草稿並進行排版，請稍候...');
-
-        try {
-          let promptText = `你是一位專業的國小總務處事務組長助手。請幫我將以下的「粗略筆記」或「照片」自動整理成一份格式清晰的業務筆記。\n\n`;
-          promptText += `請提供 JSON 格式的回應，包含以下欄位：\n` +
-                        `1. title: 簡短且明確的任務名稱 (字串)\n` +
-                        `2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n` +
-                        `3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n` +
-                        `4. details: 詳細流程步驟與注意事項（請用繁體中文，將草稿轉換成條列式、有條理的說明，若有提到金額或系統代碼請務必保留）\n\n`;
-          
-          if (rawNote.trim()) {
-            promptText += `以下是我的粗略筆記：\n${rawNote}\n`;
-          } else {
-            promptText += `(未提供文字草稿，請直接分析隨附的圖片內容來產出流程)\n`;
-          }
-
-          const parts = [{ text: promptText }];
-
-          const base64Images = currentImages.filter(img => img.startsWith('data:image'));
-          base64Images.forEach(base64Str => {
-             const base64Data = base64Str.split(',')[1];
-             const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
-             parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
-          });
-
-          const payload = {
-            contents: [{ parts: parts }],
-            generationConfig: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: "OBJECT",
-                properties: {
-                  title: { type: "STRING" },
-                  category: { type: "STRING" },
-                  reminderTarget: { type: "STRING" },
-                  details: { type: "STRING" }
-                }
-              }
-            }
-          };
-
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-
-          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) {
-            let cleanText = text.trim();
-            const regex = new RegExp('`{3}(?:json)?([\\s\\S]*?)`{3}');
-            const match = cleanText.match(regex);
-            if (match) {
-              cleanText = match[1].trim();
-            }
-            
-            try {
-              const result = JSON.parse(cleanText);
-              setFormData(prev => ({
-                ...prev,
-                title: result.title || prev.title,
-                category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
-                reminderTarget: result.reminderTarget || prev.reminderTarget,
-                details: result.details || prev.details
-              }));
-              showToast('✨ AI 整理成功！已為您自動填入下方的正式表單中。');
-            } catch (parseError) {
-              console.error("JSON Parse Error:", parseError, "Raw Text:", text);
-              throw new Error("AI 回傳的資料格式有誤，無法套用。");
-            }
-          } else {
-             throw new Error("AI 未回傳任何文字結果。");
-          }
-        } catch (error) {
-          console.error("AI Analysis Error:", error);
-          showToast(`❌ 整理失敗：${error.message}`);
-        } finally {
-          setIsAnalyzing(false);
-        }
       };
 
       const handleFormSubmit = (e) => {
