@@ -122,14 +122,13 @@
     };
 
     function App() {
-      // 核心狀態
       const [items, setItems] = useState([]);
       const [activeTab, setActiveTab] = useState('dashboard');
       const [editingItem, setEditingItem] = useState(null);
+      
       const [user, setUser] = useState(null);
       const [loading, setLoading] = useState(true);
 
-      // 表單專屬狀態 (已提升到主元件防止重新渲染導致流失)
       const [formData, setFormData] = useState({
         title: '',
         category: '',
@@ -141,18 +140,16 @@
       const [isUploading, setIsUploading] = useState(false);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-      // 分類狀態
       const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
       const [archivedCategories, setArchivedCategories] = useState([]);
       const [newCategory, setNewCategory] = useState('');
       
-      // 搜尋與小撇步狀態
       const [searchTerm, setSearchTerm] = useState('');
       const [filterCategory, setFilterCategory] = useState('');
+
       const [tips, setTips] = useState([]);
       const [newTip, setNewTip] = useState('');
 
-      // 其他 UI 狀態
       const [toastMsg, setToastMsg] = useState('');
       const [isProcessing, setIsProcessing] = useState(false);
 
@@ -370,7 +367,6 @@
         showToast('✅ 備份文字檔已成功下載');
       };
 
-      // --- 按鈕事件處理 ---
       const handleRestoreDefaultTasks = async () => {
         if (!user) return;
         const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
@@ -478,7 +474,6 @@
         }
       };
 
-      // 導覽切換與表單控制 (將狀態存放於父元件)
       const handleAddNew = () => {
         setEditingItem(null);
         setFormData({
@@ -505,7 +500,6 @@
         setActiveTab('form');
       };
 
-      // --- 圖片上傳與 AI 功能 ---
       const handleImageUpload = async (e) => {
         const fileInput = e.target;
         const files = Array.from(fileInput.files);
@@ -542,7 +536,7 @@
           showToast('❌ 圖片壓縮或上傳失敗，請重試。');
         } finally { 
           setIsUploading(false);
-          fileInput.value = ''; // 允許重新選擇同一檔案
+          fileInput.value = ''; 
         }
       };
 
@@ -646,7 +640,6 @@
         });
       };
 
-      // --- 分類與撇步管理 ---
       const handleAddCategory = async (e) => {
         e.preventDefault();
         const cleanName = newCategory.trim();
@@ -702,7 +695,22 @@
         } catch (error) {}
       };
 
-      // --- 渲染子元件 ---
+      // == 重要修復：補回 filteredItems 的定義區塊 ==
+      const filteredItems = useMemo(() => {
+        return activeItems.filter(item => {
+          const matchSearch = item.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                              item.details?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                              item.reminderTarget?.toLowerCase().includes(searchTerm.toLowerCase());
+          const matchCategory = filterCategory === '' || item.category === filterCategory;
+          return matchSearch && matchCategory;
+        }).sort((a, b) => {
+          if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+          if (a.dueDate) return -1;
+          if (b.dueDate) return 1;
+          return 0;
+        });
+      }, [activeItems, searchTerm, filterCategory]);
+
       const renderDashboard = () => {
         const upcomingItems = activeItems.filter(item => {
           if (!item.dueDate) return false;
@@ -932,7 +940,6 @@
                     {item.details}
                   </div>
 
-                  {/* 多圖預覽網格區塊 */}
                   {images.length > 0 && (
                     <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm">
                       <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold">
