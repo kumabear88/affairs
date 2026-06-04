@@ -44,7 +44,7 @@
       User, LayoutDashboard, ListTodo, Edit, Trash2, FileText, Loader2,
       Settings, Tag, Archive, RotateCcw, Image as ImageIcon, Sparkles, BookOpen,
       Megaphone, Lightbulb, Download, UploadCloud, X, Trash, RefreshCw, FileDown,
-      Wand2
+      Wand2, AlignLeft
     } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -80,6 +80,7 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
+    // 在 Ezpage 上統一使用 ezpage-deployment 作為儲存路徑前綴
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'ezpage-deployment'; 
 
     const DEFAULT_CATEGORIES = [
@@ -137,6 +138,7 @@
         reminderTarget: '',
         referenceImages: []
       });
+      const [rawNote, setRawNote] = useState(''); // 新增：供使用者貼上雜亂草稿的狀態
       const [isUploading, setIsUploading] = useState(false);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -368,7 +370,10 @@
       };
 
       const handleRestoreDefaultTasks = async () => {
-        if (!user) return;
+        if (!user) {
+          showToast('請先檢查網路或金鑰連線！');
+          return;
+        }
         const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
@@ -408,7 +413,10 @@
       };
 
       const handleSaveItem = async (newItemData) => {
-        if (!user) return;
+        if (!user) {
+          showToast('尚未連線資料庫，請檢查設定！');
+          return;
+        }
         try {
           if (editingItem && editingItem.id) {
             const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
@@ -476,6 +484,7 @@
 
       const handleAddNew = () => {
         setEditingItem(null);
+        setRawNote('');
         setFormData({
           title: '',
           category: categories.length > 0 ? categories[0] : '其他',
@@ -489,6 +498,7 @@
 
       const handleEdit = (item) => {
         setEditingItem(item);
+        setRawNote('');
         setFormData({
           title: item.title || '',
           category: item.category || (categories.length > 0 ? categories[0] : '其他'),
@@ -547,10 +557,11 @@
         }));
       };
 
-      const handleAnalyzeImages = async () => {
+      // == 更新：AI 辨識現在主要分析「草稿文字」，並可選是否包含「圖片」 ==
+      const handleAnalyzeNotes = async () => {
         const currentImages = formData.referenceImages || [];
-        if (currentImages.length === 0) {
-          showToast('請先上傳至少一張實務照片供 AI 辨識！');
+        if (!rawNote.trim() && currentImages.length === 0) {
+          showToast('請先輸入「筆記草稿」或「上傳實務照片」供 AI 整理！');
           return;
         }
         if (!apiKey || apiKey === "請貼上您的_GEMINI_API_金鑰") {
@@ -559,20 +570,26 @@
         }
         
         setIsAnalyzing(true);
-        showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
+        showToast('🤖 AI 正在努力閱讀您的草稿並進行分類排版，請稍候...');
 
         try {
+          let promptText = `你是一位專業的國小總務處事務組長助手。請幫我將以下的「粗略筆記」自動整理成一份格式清晰的業務筆記。\n\n`;
+          promptText += `請提供 JSON 格式的回應，包含以下欄位：\n` +
+                        `1. title: 簡短且明確的任務名稱 (字串)\n` +
+                        `2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n` +
+                        `3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n` +
+                        `4. details: 詳細流程步驟與注意事項（請用繁體中文，將草稿轉換成條列式、有條理的說明，若有提到金額或系統代碼請務必保留）\n\n`;
+          
+          if (rawNote.trim()) {
+            promptText += `以下是我的粗略筆記：\n${rawNote}\n`;
+          } else {
+            promptText += `(未提供文字草稿，請直接分析隨附的圖片內容來產出流程)\n`;
+          }
+
+          const parts = [{ text: promptText }];
+
+          // 若有上傳圖片，一併丟給 AI
           const base64Images = currentImages.filter(img => img.startsWith('data:image'));
-          if (base64Images.length === 0) throw new Error("沒有可解析的有效圖片");
-
-          const parts = [
-            { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
-                    "1. title: 簡短且明確的任務名稱 (字串)\n" +
-                    "2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n" +
-                    "3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n" +
-                    "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
-          ];
-
           base64Images.forEach(base64Str => {
              const base64Data = base64Str.split(',')[1];
              const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
@@ -611,13 +628,13 @@
               reminderTarget: result.reminderTarget || prev.reminderTarget,
               details: result.details || prev.details
             }));
-            showToast('✨ AI 解析成功！已為您自動填入表單。');
+            showToast('✨ AI 整理成功！已為您自動填入下方的正式表單中。');
           } else {
              throw new Error("API return empty text");
           }
         } catch (error) {
           console.error("AI Analysis Error:", error);
-          showToast('❌ AI 解析失敗，可能是網路問題或圖片無法辨識。請手動填寫。');
+          showToast('❌ AI 整理失敗，可能是網路問題或內容無法辨識。請手動填寫。');
         } finally {
           setIsAnalyzing(false);
         }
@@ -695,7 +712,6 @@
         } catch (error) {}
       };
 
-      // == 重要修復：補回 filteredItems 的定義區塊 ==
       const filteredItems = useMemo(() => {
         return activeItems.filter(item => {
           const matchSearch = item.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -940,6 +956,7 @@
                     {item.details}
                   </div>
 
+                  {/* 多圖預覽網格區塊 */}
                   {images.length > 0 && (
                     <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm">
                       <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold">
@@ -1072,73 +1089,82 @@
               </h2>
               
               <form onSubmit={handleFormSubmit} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* 🤖 全新功能：AI 快速筆記草稿區 */}
+                <div className="bg-indigo-50/70 p-5 rounded-xl border border-indigo-200 shadow-sm space-y-4">
+                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                     <div>
+                       <label className="flex items-center text-base font-bold text-indigo-900 mb-1">
+                         <AlignLeft size={20} className="mr-2 text-indigo-600" />
+                         ✍️ 快速筆記草稿區 (讓 AI 幫你整理)
+                       </label>
+                       <p className="text-xs text-indigo-700">把開會的隨手記、凌亂的代碼或步驟貼在這裡，讓 AI 幫你歸納成有條理的正式表格！</p>
+                     </div>
+                     <button 
+                       type="button" 
+                       onClick={handleAnalyzeNotes}
+                       disabled={(!rawNote.trim() && currentImages.length === 0) || isAnalyzing}
+                       className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed font-bold text-sm shadow-md transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+                     >
+                       {isAnalyzing ? <Loader2 size={18} className="animate-spin" /> : <Wand2 size={18} />}
+                       {isAnalyzing ? '整理中...' : '🤖 AI 智慧整理'}
+                     </button>
+                   </div>
+                   
+                   <textarea 
+                     value={rawNote} 
+                     onChange={(e) => setRawNote(e.target.value)} 
+                     placeholder="例：剛跟主計主任說下個月水費要在1號前送，記得拿電子單印出來黏在憑證下方，代碼2123..." 
+                     className="w-full px-4 py-3 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-y text-sm font-mono leading-relaxed"
+                     rows="3"
+                   ></textarea>
 
-                  {/* 上傳圖片與 AI 辨識區塊 */}
-                  <div className="space-y-3 md:col-span-2 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 shadow-sm">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
-                       <div>
-                         <label className="block text-sm font-bold text-indigo-900 mb-1">📸 上傳實務照片</label>
-                         <p className="text-xs text-indigo-700">上傳照片後，點擊「AI 智慧解析」，讓機器人幫你自動分類寫筆記！ (最多 5 張)</p>
-                       </div>
-                       <button 
-                         type="button" 
-                         onClick={handleAnalyzeImages}
-                         disabled={currentImages.length === 0 || isAnalyzing}
-                         className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed font-bold text-sm shadow-sm transition-colors flex items-center gap-2 whitespace-nowrap self-start sm:self-auto"
-                       >
-                         {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
-                         {isAnalyzing ? '正在分析...' : '🤖 AI 智慧解析'}
-                       </button>
-                    </div>
-                    
-                    {currentImages.length > 0 && (
-                      <div className="flex flex-wrap gap-4 mb-4 bg-white p-3 rounded-lg border border-indigo-50">
+                   {/* 草稿區內的圖片上傳 */}
+                   <div className="pt-2 border-t border-indigo-200/50">
+                     <p className="text-xs text-indigo-700 mb-2 font-medium">📎 附加上傳實務照片（選填，AI 也會參考圖片裡的收據、單據來幫你寫筆記）</p>
+                     
+                     {currentImages.length > 0 && (
+                      <div className="flex flex-wrap gap-4 mb-3 bg-white p-2 rounded-lg border border-indigo-50">
                         {currentImages.map((imgSrc, idx) => {
                           const isBase64 = imgSrc.startsWith('data:image');
                           return (
                             <div key={idx} className="relative inline-block border border-slate-200 rounded-lg p-1 bg-slate-50 shadow-sm">
                               {isBase64 ? (
-                                <img src={imgSrc} alt={`預覽-${idx}`} className="h-28 w-28 object-cover rounded-md" />
+                                <img src={imgSrc} alt={`預覽-${idx}`} className="h-20 w-20 object-cover rounded-md" />
                               ) : (
-                                <div className="h-28 w-28 flex flex-col items-center justify-center p-2 text-rose-700 font-mono text-[10px] break-all border border-rose-200 rounded-md bg-rose-50 relative">
-                                  <ImageIcon size={20} className="mb-1 text-rose-400" />
-                                  <span className="text-center font-bold mt-1 text-[11px]">舊檔名無法預覽<br/>請刪除並重傳</span>
+                                <div className="h-20 w-20 flex flex-col items-center justify-center p-2 text-rose-700 font-mono text-[10px] break-all border border-rose-200 rounded-md bg-rose-50 relative">
+                                  <ImageIcon size={16} className="mb-1 text-rose-400" />
+                                  <span className="text-center font-bold mt-1 text-[9px]">請刪除舊檔<br/>重新上傳</span>
                                 </div>
                               )}
-                              <button type="button" onClick={() => handleRemoveImage(idx)} className="absolute -top-2 -right-2 bg-rose-500 hover:bg-rose-600 text-white p-1 rounded-full shadow transition-colors z-10" title="移除此圖片"><X size={14} /></button>
+                              <button type="button" onClick={() => handleRemoveImage(idx)} className="absolute -top-2 -right-2 bg-rose-500 hover:bg-rose-600 text-white p-1 rounded-full shadow transition-colors z-10"><X size={12} /></button>
                             </div>
                           );
                         })}
                       </div>
                     )}
                     
-                    {/* 突破 Ezpage 點擊限制的 Transparent Overlay 上傳框 */}
-                    {currentImages.length < 5 ? (
-                      <div className="relative w-full h-24 rounded-lg overflow-hidden border-2 border-dashed border-indigo-300 bg-white hover:bg-indigo-50 transition-colors">
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          onChange={handleImageUpload} 
-                          disabled={isUploading || isAnalyzing} 
-                          multiple 
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-50"
-                        />
-                        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-3 pb-3">
-                          {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
-                          <p className="text-sm text-indigo-600 font-medium">
-                            {isUploading ? '圖片處理中...' : `點擊此處上傳照片 (已選 ${currentImages.length}/5 張)`}
+                    {currentImages.length < 5 && (
+                      <div className="relative w-full h-16 rounded-lg overflow-hidden border border-dashed border-indigo-300 bg-white hover:bg-indigo-50 transition-colors">
+                        <input type="file" accept="image/*" onChange={handleImageUpload} disabled={isUploading || isAnalyzing} multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-50" />
+                        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                          {isUploading ? <Loader2 className="w-5 h-5 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-5 h-5 text-indigo-400 mb-1" />}
+                          <p className="text-[11px] text-indigo-600 font-medium">
+                            {isUploading ? '圖片壓縮與處理中...' : `點此上傳照片供 AI 參考 (已選 ${currentImages.length}/5 張)`}
                           </p>
-                          <p className="text-[10px] text-slate-400 mt-1">可以直接點擊框框，或按住 Ctrl 鍵一次選取多張</p>
                         </div>
                       </div>
-                    ) : (
-                      <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center gap-2">
-                        <AlertCircle size={16} /><span>您已達到單筆業務 5 張圖片的上傳上限。</span>
-                      </div>
                     )}
-                  </div>
+                   </div>
+                </div>
+                
+                <div className="h-px bg-slate-200 my-8 relative">
+                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                     或者手動填寫下方正式表單
+                   </div>
+                </div>
 
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-2 md:col-span-2">
                     <label className="block text-sm font-bold text-slate-700">工作/任務名稱 <span className="text-rose-500">*</span></label>
                     <input required type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"/>
@@ -1163,13 +1189,13 @@
 
                   <div className="space-y-2 md:col-span-2">
                     <label className="block text-sm font-bold text-slate-700">詳細流程與注意事項 <span className="text-rose-500">*</span></label>
-                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你自動分類寫筆記..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
+                    <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以直接輸入，或是使用上方的「AI 智慧整理」自動產生..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
                   </div>
                 </div>
 
                 <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                   <button type="button" onClick={() => { setActiveTab('list'); setEditingItem(null); }} className="px-6 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium text-sm">取消</button>
-                  <button type="submit" disabled={isUploading || isAnalyzing} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 text-sm disabled:opacity-50"><CheckCircle2 size={18} /> {editingItem ? '儲存更新' : '新增筆記'}</button>
+                  <button type="submit" disabled={isUploading || isAnalyzing} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 text-sm disabled:opacity-50"><CheckCircle2 size={18} /> {editingItem ? '儲存更新' : '確認新增'}</button>
                 </div>
               </form>
             </div>
