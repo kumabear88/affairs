@@ -350,7 +350,7 @@
           const prompt = `你是一位專業的國小總務處事務組長。請根據以下業務內容，撰寫一封禮貌的公務通知信給相關單位或人員。\n\n收件人/提醒對象：${item.reminderTarget || '相關同仁'}\n業務名稱：${item.title}\n業務細節：${item.details}\n\n請直接輸出信件內容，包含主旨與內文。不需要額外的問候語，語氣要專業、友善且精煉。`;
           const payload = { contents: [{ parts: [{ text: prompt }] }] };
 
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${getAiModelName()}:generateContent?key=${apiKey}`, {
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -379,7 +379,7 @@
           const prompt = `你是一位專業的國小總務處 AI 秘書。以下是本週需要關注的待辦與逾期事項清單：\n${taskListStr}\n\n請幫我寫一段簡短、專業的「每週業務匯報草稿」，這份報告會直接提交給總務主任或校長。請包含：\n1. 開頭問候與本週狀況概述\n2. 需特別關注的緊急/逾期事項彙整（若無則寫整體進度良好）\n3. 結語，展現積極負責的態度。`;
           const payload = { contents: [{ parts: [{ text: prompt }] }] };
 
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${getAiModelName()}:generateContent?key=${apiKey}`, {
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -694,7 +694,7 @@
             }
           };
 
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${getAiModelName()}:generateContent?key=${apiKey}`, {
+          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
