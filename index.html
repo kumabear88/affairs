@@ -1,0 +1,1247 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  Search, Plus, Calendar, Clock, AlertCircle, CheckCircle2, 
+  User, LayoutDashboard, ListTodo, Edit, Trash2, FileText, Loader2,
+  Settings, Tag, Archive, RotateCcw, Image as ImageIcon, Sparkles, BookOpen,
+  Megaphone, Lightbulb, Download, UploadCloud, X, Trash, RefreshCw, FileDown,
+  Wand2
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// AI API Key (從環境變數取得)
+const apiKey = "";
+
+// 預設分類
+const DEFAULT_CATEGORIES = [
+  '採購發包', 
+  '修繕維護', 
+  '財產管理', 
+  '人事與場地', 
+  '庶務與活動',
+  '水電與帳務',
+  '其他'
+];
+
+const TASK_TEMPLATES = [
+  {
+    id: 'water-bill',
+    title: '每月水費核銷作業',
+    category: '水電與帳務',
+    reminderTarget: '出納組、主計室',
+    referenceImages: [],
+    details: `【日常水費處理步驟】\n1. 取得電子通知單：\n   每月收到台灣自來水公司電子水費通知單後，下載電子檔並列印（例如：115年6月水費電子通知，應繳總金額 3,332 元）。\n\n2. 備妥請購單與憑證：\n   - 填寫「請購(修)單」，品名用途註明「公務水費（例如：115年6月公務水費）」，填入對應金額（如 3,332 元）。\n   - 列印繳費證明或扣帳電子通知單，作為原始憑證。\n\n3. 黏貼憑證：\n   - 將列印好的「水費電子通知單/繳費證明」平整黏貼在「黏貼憑證用紙」的【貼上憑證線】以下區域。\n\n4. 核章送件：\n   - 在黏貼憑證用紙及請購單的「經辦人/經(承)辦單位」蓋上你的職章（事務組長）。\n   - 附在請購單後面，送交出納組與主計室辦理核銷流程。\n\n【注意事項】\n* 處理時間通常與電費差不多，盡量在每個月最後一天前完成，最晚下個月一號前送出。\n* 水費不需像活動中心電費那樣進行複雜的跨單位抄表與比例分攤，直接整筆核銷即可，流程相對簡單。`
+  },
+  {
+    id: 'electricity-bill',
+    title: '每月電費分攤與核銷作業',
+    category: '水電與帳務',
+    reminderTarget: '出納組、主計室、各分攤單位人員 (如威湧運動)',
+    referenceImages: [], 
+    details: `【每月例行電費處理步驟】\n1. 取得帳單：\n   每月收到台電電費帳單後（如 115年6月電費，總金額 135,096 元），下載電子檔並列印出來。\n\n2. 現場抄表：\n   前往地下一樓電氣室，查看並記錄「集合式電表」的度數（如 SPM-8 電表顯示的總電能 kWh 數值，例如 588739.4）。\n\n3. 登記與計算分攤：\n   - 將抄表度數填入「114年度東湖國小活動中心(2樓)電表分攤登記紀錄」表中。\n   - 計算本期度數與上期度數的差額，並依據合約公式計算各單位（例如：東湖國小分攤 84,032 元、威湧運動分攤 51,064 元）。\n\n4. 製作請購與憑證：\n   - 影印填寫好的「支出科目分攤表」與「電表分攤登記紀錄」。\n   - 填寫「請購(修)單」與「黏貼憑證用紙」，並將電費帳單與分攤表黏貼於憑證用紙上。\n\n5. 核章與驗收：\n   - 在騎縫處與核章欄位蓋上職章，並請相關事務人員（驗收證明人）蓋章。\n   - 備齊文件送出納、主計室核銷。\n\n【注意事項】\n* 每月最晚必須在下個月一號前完成所有計算、表單填寫與核章。`
+  }
+];
+
+// Helper: Exponential Backoff for API calls
+const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return await response.json();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      await new Promise(res => setTimeout(res, backoff));
+      backoff *= 2;
+    }
+  }
+};
+
+export default function App() {
+  const [items, setItems] = useState([]);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [editingItem, setEditingItem] = useState(null);
+  
+  // Firebase Auth State
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // 分類狀態
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [archivedCategories, setArchivedCategories] = useState([]);
+  const [newCategory, setNewCategory] = useState('');
+  
+  // 搜尋與過濾狀態
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+
+  // 小撇步跑馬燈狀態
+  const [tips, setTips] = useState([]);
+  const [newTip, setNewTip] = useState('');
+
+  // 吐司通知
+  const [toastMsg, setToastMsg] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+    initAuth();
+    
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    setLoading(true);
+    const q = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+    
+    const unsubscribeTasks = onSnapshot(q, (snapshot) => {
+      const fetchedItems = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      }));
+      setItems(fetchedItems);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching tasks:", error);
+      setLoading(false);
+    });
+
+    const catRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+    const unsubscribeCategories = onSnapshot(catRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setCategories(data.list || DEFAULT_CATEGORIES);
+        setArchivedCategories(data.archived || []);
+      } else {
+        setDoc(catRef, { list: DEFAULT_CATEGORIES, archived: [] }, { merge: true });
+        setCategories(DEFAULT_CATEGORIES);
+        setArchivedCategories([]);
+      }
+    });
+
+    const tipsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips');
+    const unsubscribeTips = onSnapshot(tipsRef, (docSnap) => {
+      if (docSnap.exists() && docSnap.data().list && docSnap.data().list.length > 0) {
+        setTips(docSnap.data().list);
+      } else {
+        const initialTips = [
+          { id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123會搭配L開頭代收款，2123是應附代收款是學校的補助款。' }
+        ];
+        setDoc(tipsRef, { list: initialTips }, { merge: true });
+        setTips(initialTips);
+      }
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeCategories();
+      unsubscribeTips();
+    };
+  }, [user]);
+
+  // 分離出「正常業務」與「被移至垃圾桶的業務」
+  const activeItems = useMemo(() => items.filter(item => !item.deletedAt), [items]);
+  const trashedItems = useMemo(() => items.filter(item => item.deletedAt).sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt)), [items]);
+
+  // 解析圖片欄位
+  const getImagesArray = (refImages) => {
+    if (!refImages) return [];
+    if (Array.isArray(refImages)) return refImages;
+    if (typeof refImages === 'string') {
+      if (refImages.startsWith('data:image')) return [refImages];
+      return refImages.split(',').map(img => img.trim()).filter(Boolean);
+    }
+    return [];
+  };
+
+  // 計算到期日狀態
+  const getItemStatus = (dueDate) => {
+    if (!dueDate) return { status: 'none', color: 'bg-gray-100 text-gray-600 border border-gray-200', text: '無特定期限' };
+    
+    const due = new Date(dueDate);
+    const now = new Date(today);
+    const diffTime = due - now;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) return { status: 'overdue', color: 'bg-rose-50 text-rose-700 border border-rose-200', text: '已逾期' };
+    if (diffDays <= 7) return { status: 'warning', color: 'bg-amber-50 text-amber-700 border border-amber-200', text: `${diffDays} 天內到期` };
+    return { status: 'safe', color: 'bg-emerald-50 text-emerald-700 border border-emerald-200', text: '時間充裕' };
+  };
+
+  // 圖片壓縮函數
+  const compressImage = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target.result;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800; // 稍微調高，讓 AI 辨識更清楚
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+          } else {
+            if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
+        };
+        img.onerror = (error) => reject(error);
+      };
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  // 生成並下載文字檔備份
+  const downloadBackup = (currentItems, currentTips, currentTrashed) => {
+    const dateStr = new Date().toLocaleString('zh-TW');
+    const safeDate = new Date().toISOString().split('T')[0];
+    
+    let content = `國小事務組長業務系統 - 資料備份 (${dateStr})\n`;
+    content += `=================================================\n\n`;
+
+    content += `【💡 跑馬燈小撇步 / 備忘錄】 (共 ${currentTips.length} 條)\n`;
+    content += `-------------------------------------------------\n`;
+    currentTips.forEach((t, i) => {
+      content += `${i + 1}. ${t.text}\n`;
+    });
+    content += `\n\n`;
+
+    content += `【📁 作用中業務細節庫】 (共 ${currentItems.length} 筆)\n`;
+    content += `-------------------------------------------------\n`;
+    
+    const sortedItems = [...currentItems].sort((a, b) => {
+      if (a.category < b.category) return -1;
+      if (a.category > b.category) return 1;
+      return 0;
+    });
+
+    sortedItems.forEach((item, i) => {
+      content += `[${i + 1}] 任務名稱：${item.title}\n`;
+      content += `    分類：${item.category}\n`;
+      if (item.dueDate) content += `    到期日：${item.dueDate}\n`;
+      if (item.reminderTarget) content += `    提醒對象：${item.reminderTarget}\n`;
+      
+      const images = getImagesArray(item.referenceImages);
+      if (images.length > 0) {
+        content += `    圖檔參照：共包含 ${images.length} 張圖片資料\n`;
+      }
+      
+      content += `    詳細內容：\n`;
+      const indentedDetails = item.details.split('\n').map(line => `      ${line}`).join('\n');
+      content += `${indentedDetails}\n\n`;
+      content += `- - - - - - - - - - - - - - - - - - - - - - - - -\n\n`;
+    });
+
+    if (currentTrashed && currentTrashed.length > 0) {
+      content += `【🗑️ 已移至垃圾桶的資料】 (共 ${currentTrashed.length} 筆)\n`;
+      content += `-------------------------------------------------\n`;
+      currentTrashed.forEach((item, i) => {
+        content += `[已刪除] ${item.title} (於 ${new Date(item.deletedAt).toLocaleString('zh-TW')} 刪除)\n`;
+      });
+    }
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `事務組長業務備份_${safeDate}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showToast('✅ 備份文字檔已成功下載');
+  };
+
+  // 一鍵補回預設資料
+  const handleRestoreDefaultTasks = async () => {
+    if (!user) return;
+    
+    const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+    const now = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+
+    try {
+      let addedCount = 0;
+      const hasElec = activeItems.some(t => t.title.includes('電費'));
+      const hasWater = activeItems.some(t => t.title.includes('水費'));
+      
+      const newItems = [...activeItems];
+
+      if (!hasElec) {
+        const { id, ...elecData } = TASK_TEMPLATES[1]; 
+        const elecTask = { ...elecData, dueDate: lastDay, createdAt: new Date().toISOString() };
+        await addDoc(tasksCol, elecTask);
+        newItems.push(elecTask);
+        addedCount++;
+      }
+      
+      if (!hasWater) {
+        const { id, ...waterData } = TASK_TEMPLATES[0]; 
+        const waterTask = { ...waterData, dueDate: lastDay, createdAt: new Date().toISOString() };
+        await addDoc(tasksCol, waterTask);
+        newItems.push(waterTask);
+        addedCount++;
+      }
+      
+      if (addedCount > 0) {
+        showToast('✅ 業務細節已成功補回系統，並自動產出備份檔！');
+        setActiveTab('list'); 
+        downloadBackup(newItems, tips, trashedItems);
+      } else {
+        showToast('您已經有這些業務紀錄囉！');
+      }
+    } catch (error) {
+      console.error("Error restoring default tasks:", error);
+    }
+  };
+
+  const handleSaveItem = async (newItemData) => {
+    if (!user) return;
+    
+    try {
+      if (editingItem && editingItem.id) {
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
+        await updateDoc(docRef, newItemData);
+        showToast('已更新業務紀錄');
+      } else {
+        const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+        await addDoc(colRef, { 
+          ...newItemData, 
+          createdAt: new Date().toISOString() 
+        });
+        showToast('已新增業務紀錄');
+      }
+      setActiveTab('list');
+      setEditingItem(null);
+    } catch (error) {
+      console.error("Error saving document:", error);
+    }
+  };
+
+  // 軟刪除 (移至垃圾桶)
+  const handleDelete = async (id) => {
+    if (!user) return;
+    try {
+      const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
+      await updateDoc(taskRef, {
+        deletedAt: new Date().toISOString()
+      });
+      showToast('資料已移至垃圾桶');
+    } catch (error) {
+      console.error("Error deleting document:", error);
+    }
+  };
+
+  // 從垃圾桶還原
+  const handleRestoreTask = async (id) => {
+    if (!user) return;
+    try {
+      const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
+      await updateDoc(taskRef, {
+        deletedAt: null // 移除刪除標記
+      });
+      showToast('已成功還原資料');
+    } catch (error) {
+      console.error("Error restoring document:", error);
+    }
+  };
+
+  // 永久刪除
+  const handlePermanentDelete = async (id) => {
+    if (!user) return;
+    if (!window.confirm("確定要永久刪除這筆紀錄嗎？(刪除後將無法復原)")) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
+      showToast('資料已永久刪除');
+    } catch (error) {
+      console.error("Error permanently deleting:", error);
+    }
+  };
+
+  // 清空垃圾桶
+  const handleEmptyTrash = async () => {
+    if (!user || trashedItems.length === 0) return;
+    if (!window.confirm(`確定要清空垃圾桶內的 ${trashedItems.length} 筆資料嗎？(此操作無法復原)`)) return;
+    
+    setIsProcessing(true);
+    try {
+      const deletePromises = trashedItems.map(item => 
+        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', item.id))
+      );
+      await Promise.all(deletePromises);
+      showToast('🗑️ 垃圾桶已清空');
+    } catch (error) {
+      console.error("Error emptying trash:", error);
+      showToast('清空失敗，請重試');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleEdit = (item) => {
+    setEditingItem(item);
+    setActiveTab('form');
+  };
+
+  // 分類與撇步管理 (略)
+  const handleAddCategory = async (e) => {
+    e.preventDefault();
+    const cleanName = newCategory.trim();
+    if (!cleanName || categories.includes(cleanName) || archivedCategories.includes(cleanName)) return;
+    const updatedCategories = [...categories, cleanName];
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedCategories }, { merge: true });
+      setNewCategory('');
+      showToast('分類已新增');
+    } catch (error) {}
+  };
+
+  const handleArchiveCategory = async (catToArchive) => {
+    if (categories.length <= 1) return;
+    const updatedActive = categories.filter(c => c !== catToArchive);
+    const updatedArchived = [...archivedCategories, catToArchive];
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+    } catch (error) {}
+  };
+
+  const handleRestoreCategory = async (catToRestore) => {
+    const updatedArchived = archivedCategories.filter(c => c !== catToRestore);
+    const updatedActive = [...categories, catToRestore];
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+    } catch (error) {}
+  };
+
+  const handleDeletePermanentlyCat = async (catToDelete) => {
+    const updatedArchived = archivedCategories.filter(c => c !== catToDelete);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { archived: updatedArchived }, { merge: true });
+    } catch (error) {}
+  };
+
+  const handleAddTip = async (e) => {
+    e.preventDefault();
+    if (!newTip.trim()) return;
+    const updatedTips = [...tips, { id: Date.now().toString(), text: newTip.trim() }];
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+      setNewTip('');
+      showToast('小撇步已新增');
+    } catch (error) {}
+  };
+
+  const handleDeleteTip = async (id) => {
+    if (!window.confirm("確定要刪除這條撇步嗎？")) return;
+    const updatedTips = tips.filter(t => t.id !== id);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+    } catch (error) {}
+  };
+
+  // 前端過濾與檢索 (只針對 Active Items)
+  const filteredItems = useMemo(() => {
+    return activeItems.filter(item => {
+      const matchSearch = item.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          item.details?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          item.reminderTarget?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchCategory = filterCategory === '' || item.category === filterCategory;
+      return matchSearch && matchCategory;
+    }).sort((a, b) => {
+      if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return 0;
+    });
+  }, [activeItems, searchTerm, filterCategory]);
+
+  const Dashboard = () => {
+    const upcomingItems = activeItems.filter(item => {
+      if (!item.dueDate) return false;
+      const status = getItemStatus(item.dueDate).status;
+      return status === 'overdue' || status === 'warning';
+    }).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    return (
+      <div className="space-y-6">
+        {activeItems.length === 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-8 text-center shadow-sm">
+            <Sparkles className="w-12 h-12 text-blue-500 mx-auto mb-3" />
+            <h3 className="text-xl font-bold text-blue-800 mb-2">您的資料庫目前是空的</h3>
+            <p className="text-blue-600 mb-6 text-sm">要幫您一鍵補回之前記錄的「每月電費」與「每月水費」細節嗎？<br/>補回後系統會自動為您下載一份文字檔備份。</p>
+            <button 
+              onClick={handleRestoreDefaultTasks} 
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-blue-700 transition-colors flex items-center justify-center mx-auto"
+            >
+              <CheckCircle2 size={18} className="mr-2" />一鍵補回業務資料並備份
+            </button>
+          </div>
+        )}
+
+        {tips.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center overflow-hidden shadow-sm relative">
+            <div className="flex-shrink-0 text-amber-600 mr-3 flex items-center gap-2 font-bold whitespace-nowrap z-10 bg-amber-50 pr-2">
+              <Megaphone size={18} className="animate-pulse" />
+              撇步提醒
+            </div>
+            <div className="flex-1 overflow-hidden relative h-6 w-full">
+              <div 
+                className="absolute whitespace-nowrap text-amber-800 font-medium text-sm flex items-center h-full" 
+                style={{ animation: `marquee ${tips.length * 15 > 20 ? tips.length * 15 : 20}s linear infinite`, paddingLeft: '100%' }}
+              >
+                {tips.map((tip) => (
+                  <span key={tip.id} className="mx-8 flex items-center gap-1">
+                    <Lightbulb size={14} className="text-amber-500" />
+                    {tip.text}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <style>{`
+              @keyframes marquee {
+                0% { transform: translateX(0); }
+                100% { transform: translateX(-100%); }
+              }
+            `}</style>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-blue-100 rounded-lg text-blue-600"><FileText size={20} /></div>
+              <h3 className="font-bold text-gray-700">總紀錄數</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-800">{activeItems.length} <span className="text-sm font-normal text-gray-500">筆業務細節</span></p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-amber-100 rounded-lg text-amber-600"><Clock size={20} /></div>
+              <h3 className="font-bold text-gray-700">7天內需處理</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-800">
+              {activeItems.filter(i => i.dueDate && getItemStatus(i.dueDate).status === 'warning').length} 
+              <span className="text-sm font-normal text-gray-500">件</span>
+            </p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-rose-100 rounded-lg text-rose-600"><AlertCircle size={20} /></div>
+              <h3 className="font-bold text-gray-700">已逾期事項</h3>
+            </div>
+            <p className="text-3xl font-bold text-gray-800">
+              {activeItems.filter(i => i.dueDate && getItemStatus(i.dueDate).status === 'overdue').length} 
+              <span className="text-sm font-normal text-gray-500">件</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <AlertCircle size={20} className="text-rose-500"/> 緊急與待辦事項提醒
+            </h2>
+            <span className="text-xs text-slate-500">系統時間：{today}</span>
+          </div>
+          <div className="p-0">
+            {upcomingItems.length === 0 ? (
+              <div className="p-12 text-center text-gray-500 flex flex-col items-center">
+                <CheckCircle2 size={52} className="text-emerald-400 mb-3" />
+                <p className="text-base font-semibold text-gray-700">目前沒有緊急或即將到期的事項，做得好！</p>
+                <p className="text-sm text-gray-400 mt-1">您可以利用「新增學到的知識」把今天的工作記錄下來。</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {upcomingItems.map(item => (
+                  <div key={item.id} className="p-6 hover:bg-slate-50/50 transition-colors flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                        <span className={`px-2 py-0.5 rounded text-xs font-semibold ${getItemStatus(item.dueDate).color}`}>
+                          {getItemStatus(item.dueDate).text}
+                        </span>
+                        <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                          {item.category}
+                        </span>
+                        {getImagesArray(item.referenceImages).length > 0 && (
+                          <span className="inline-flex items-center gap-1 text-xs text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-100">
+                            <ImageIcon size={12} /> 圖檔 ({getImagesArray(item.referenceImages).length})
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="font-bold text-slate-800 text-lg">{item.title}</h3>
+                      <div className="flex flex-wrap gap-4 mt-2 text-sm text-slate-500">
+                        {item.reminderTarget && (
+                           <div className="flex items-center gap-1">
+                             <User size={14} /> 提醒對象：{item.reminderTarget}
+                           </div>
+                        )}
+                        {item.dueDate && (
+                           <div className="flex items-center gap-1">
+                             <Calendar size={14} /> 截止日期：{item.dueDate}
+                           </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 self-stretch sm:self-auto justify-end">
+                      <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100">
+                        <Edit size={18} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const ItemList = () => (
+    <div className="space-y-4">
+      {/* 搜尋與過濾區塊 */}
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+          <input 
+            type="text" 
+            placeholder="搜尋關鍵字、細節、聯絡人..." 
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+          />
+        </div>
+        <select 
+          value={filterCategory}
+          onChange={(e) => setFilterCategory(e.target.value)}
+          className="px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+        >
+          <option value="">所有分類</option>
+          {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+        </select>
+      </div>
+
+      {/* 列表區塊 */}
+      <div className="grid grid-cols-1 gap-4">
+        {filteredItems.length === 0 ? (
+          <div className="bg-white p-12 text-center text-gray-500 rounded-xl border border-slate-100 shadow-sm">
+            <BookOpen size={48} className="mx-auto text-slate-300 mb-3" />
+            <p className="font-semibold text-gray-700">找不到符合條件的紀錄。</p>
+            <p className="text-sm text-gray-400 mt-1">您可以點擊左側「新增學到的知識」或套用右側常用範本來建立第一筆資料！</p>
+          </div>
+        ) : (
+          filteredItems.map(item => {
+            const images = getImagesArray(item.referenceImages);
+            return (
+            <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+              <div className="flex justify-between items-start mb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-1 rounded border border-blue-100">
+                    {item.category}
+                  </span>
+                  {item.dueDate && (
+                    <span className={`text-xs font-semibold px-2 py-1 rounded-md ${getItemStatus(item.dueDate).color}`}>
+                      <Calendar size={12} className="inline mr-1" />
+                      {item.dueDate} ({getItemStatus(item.dueDate).text})
+                    </span>
+                  )}
+                  {images.length > 0 && (
+                    <span className="text-xs font-semibold text-teal-700 bg-teal-50 px-2 py-1 rounded border border-teal-100 inline-flex items-center gap-1" title="參考實務圖檔">
+                      <ImageIcon size={12} />
+                      照片：{images.length} 張
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => handleEdit(item)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded border border-transparent hover:border-blue-100 transition-colors" title="編輯這筆業務並重新上傳照片">
+                    <Edit size={16} />
+                  </button>
+                  <button onClick={() => handleDelete(item.id)} className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded border border-transparent hover:border-amber-100 transition-colors" title="移至垃圾桶">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+              
+              <h3 className="text-xl font-bold text-slate-800 mb-2">{item.title}</h3>
+              
+              <div className="flex flex-wrap gap-2 mb-4">
+                {item.reminderTarget && (
+                  <div className="flex items-center gap-2 text-xs text-amber-800 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-100 font-medium">
+                    <User size={14} />
+                    <span><strong>提醒/核章對象：</strong>{item.reminderTarget}</span>
+                  </div>
+                )}
+              </div>
+              
+              <div className="text-slate-600 whitespace-pre-wrap text-sm leading-relaxed bg-slate-50/50 p-4 rounded-lg border border-slate-100 font-mono">
+                {item.details}
+              </div>
+
+              {/* 多圖預覽網格區塊 */}
+              {images.length > 0 && (
+                <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50 shadow-sm">
+                  <div className="bg-white px-4 py-2.5 border-b border-slate-200 flex items-center text-sm text-slate-600 font-bold">
+                    <ImageIcon size={16} className="mr-2 text-indigo-500" />
+                    實務照片對照 (共 {images.length} 項)
+                  </div>
+                  <div className="p-4 bg-slate-100/30">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {images.map((imgSrc, imgIdx) => {
+                        const isImageURL = imgSrc.startsWith('data:image') || imgSrc.startsWith('http');
+                        return (
+                          <div key={imgIdx} className="flex flex-col items-center bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative h-full justify-center">
+                            {isImageURL ? (
+                              <img 
+                                src={imgSrc} 
+                                alt={`參考圖檔-${imgIdx + 1}`} 
+                                className="max-w-full h-auto max-h-[220px] object-contain rounded"
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                  e.target.nextSibling.style.display = 'flex';
+                                }}
+                              />
+                            ) : null}
+                            
+                            <div style={{ display: isImageURL ? 'none' : 'flex' }} className="flex-col items-center justify-center text-slate-600 text-xs py-4 px-2 text-center w-full h-[160px] bg-slate-50 rounded border border-dashed border-slate-300">
+                              <ImageIcon size={24} className="mx-auto mb-2 text-slate-300" />
+                              <span className="font-mono text-slate-400 break-all line-clamp-2 mb-1 px-2 line-through" title={imgSrc}>{imgSrc}</span>
+                              <span className="text-[12px] text-rose-600 font-bold mt-1">需手動重新上傳照片</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+
+  const TrashBin = () => (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-xl shadow-sm border border-slate-100 gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+            <Trash className="text-rose-500" /> 垃圾桶 (已刪除 {trashedItems.length} 筆)
+          </h2>
+          <p className="text-sm text-slate-500 mt-1">
+            被刪除的資料會暫時存放在這裡，避免誤刪。您可以隨時還原它們，或進行永久清除以釋放空間。
+          </p>
+        </div>
+        <button 
+          onClick={handleEmptyTrash} 
+          disabled={trashedItems.length === 0 || isProcessing}
+          className="px-4 py-2 bg-rose-100 text-rose-700 hover:bg-rose-200 hover:text-rose-800 rounded-lg font-bold text-sm transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap border border-rose-200"
+        >
+          {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+          清空所有垃圾
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        {trashedItems.length === 0 ? (
+          <div className="bg-white p-12 text-center text-slate-400 rounded-xl border border-dashed border-slate-200 shadow-sm">
+            <Trash size={48} className="mx-auto text-slate-200 mb-3" />
+            <p className="font-medium">垃圾桶是空的</p>
+          </div>
+        ) : (
+          trashedItems.map(item => (
+            <div key={item.id} className="bg-slate-50 p-5 rounded-xl border border-slate-200 opacity-80 hover:opacity-100 transition-opacity">
+              <div className="flex flex-col md:flex-row justify-between items-start gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-700 mb-1 line-through">{item.title}</h3>
+                  <div className="text-xs text-slate-500 flex items-center gap-3">
+                    <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded">{item.category}</span>
+                    <span>刪除時間：{new Date(item.deletedAt).toLocaleString('zh-TW')}</span>
+                  </div>
+                </div>
+                <div className="flex gap-2 w-full md:w-auto">
+                  <button 
+                    onClick={() => handleRestoreTask(item.id)} 
+                    className="flex-1 md:flex-none px-3 py-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded font-medium text-sm transition-colors flex items-center justify-center gap-1 border border-emerald-200"
+                  >
+                    <RefreshCw size={14} /> 還原
+                  </button>
+                  <button 
+                    onClick={() => handlePermanentDelete(item.id)} 
+                    className="flex-1 md:flex-none px-3 py-1.5 bg-white text-rose-600 hover:bg-rose-50 border border-rose-200 rounded font-medium text-sm transition-colors flex items-center justify-center gap-1"
+                  >
+                    <Trash2 size={14} /> 永久刪除
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
+  const ItemForm = () => {
+    const [formData, setFormData] = useState({
+      title: editingItem?.title || '',
+      category: editingItem?.category || (categories.length > 0 ? categories[0] : ''),
+      details: editingItem?.details || '',
+      dueDate: editingItem?.dueDate || '',
+      reminderTarget: editingItem?.reminderTarget || '',
+      referenceImages: editingItem?.referenceImages || []
+    });
+
+    const [isUploading, setIsUploading] = useState(false);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+    useEffect(() => {
+      if (editingItem) {
+        setFormData(prev => ({ ...prev, referenceImages: getImagesArray(editingItem) }));
+      }
+    }, [editingItem]);
+
+    const handleApplyTemplate = (tpl) => {
+      setFormData({
+        title: tpl.title,
+        category: tpl.category,
+        details: tpl.details,
+        dueDate: today, 
+        reminderTarget: tpl.reminderTarget,
+        referenceImages: getImagesArray(tpl)
+      });
+    };
+
+    const handleImageUpload = async (e) => {
+      const files = Array.from(e.target.files);
+      if (files.length === 0) return;
+
+      const nonImages = files.filter(f => !f.type.startsWith('image/'));
+      if (nonImages.length > 0) {
+        showToast('請只選擇圖片檔案！');
+        return;
+      }
+
+      setIsUploading(true);
+      try {
+        const currentImages = formData.referenceImages || [];
+        if (currentImages.length + files.length > 5) {
+          showToast('一筆業務筆記最多只能上傳 5 張圖片！');
+          setIsUploading(false);
+          return;
+        }
+
+        const compressedPromises = files.map(file => compressImage(file));
+        const compressedBase64s = await Promise.all(compressedPromises);
+        
+        setFormData(prev => ({ ...prev, referenceImages: [...currentImages, ...compressedBase64s] }));
+        showToast(`✅ 成功上傳並自動壓縮了 ${compressedBase64s.length} 張照片！`);
+      } catch (error) {
+        console.error("Image upload error:", error);
+        showToast('圖片壓縮或上傳失敗，請重試。');
+      } finally { setIsUploading(false); }
+    };
+
+    const handleRemoveImage = (indexToRemove) => {
+      const updatedImages = (formData.referenceImages || []).filter((_, idx) => idx !== indexToRemove);
+      setFormData(prev => ({ ...prev, referenceImages: updatedImages }));
+    };
+
+    const handleSubmit = (e) => {
+      e.preventDefault();
+      if (!formData.title.trim() || !formData.details.trim()) return;
+      handleSaveItem(formData);
+    };
+
+    const currentImages = formData.referenceImages || [];
+
+    // --- AI 分析圖片功能 ---
+    const handleAnalyzeImages = async () => {
+      if (currentImages.length === 0) {
+        showToast('請先上傳至少一張實務照片供 AI 辨識！');
+        return;
+      }
+      
+      setIsAnalyzing(true);
+      showToast('🤖 正在呼叫 AI 解析照片內容，請稍候...');
+
+      try {
+        // 取出所有 base64 圖片 (過濾掉無法預覽的舊檔名)
+        const base64Images = currentImages.filter(img => img.startsWith('data:image'));
+        
+        if (base64Images.length === 0) {
+          throw new Error("沒有可解析的有效圖片");
+        }
+
+        // 準備 Gemini API Payload
+        const parts = [
+          { text: "這是一張或多張國小總務處（事務組長）會遇到的業務實務照片（可能是收據、水電單、黏貼憑證、或是設備故障照等）。請幫我分析圖片，並自動整理成一份業務筆記。請提供 JSON 格式的回應，包含以下欄位：\n" +
+                  "1. title: 簡短且明確的任務名稱 (字串)\n" +
+                  "2. category: 最適合的業務分類 (只能從以下選項選一個：'採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他')\n" +
+                  "3. reminderTarget: 根據內容猜測應該聯絡或提醒誰（例如：出納、主計、請修人、廠商），若無則留空\n" +
+                  "4. details: 詳細流程步驟與注意事項（請用繁體中文，條列式說明，例如：1. 填寫請購單... 2. 黏貼憑證... 3. 蓋職章...等，若有看到金額或特定代碼也可以寫在備註）" }
+        ];
+
+        // 將圖片加入 Payload
+        base64Images.forEach(base64Str => {
+           // 移除 'data:image/jpeg;base64,' 前綴
+           const base64Data = base64Str.split(',')[1];
+           const mimeType = base64Str.substring(5, base64Str.indexOf(';'));
+           parts.push({
+             inlineData: {
+               mimeType: mimeType,
+               data: base64Data
+             }
+           });
+        });
+
+        const payload = {
+          contents: [{ parts: parts }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "OBJECT",
+              properties: {
+                title: { type: "STRING" },
+                category: { type: "STRING" },
+                reminderTarget: { type: "STRING" },
+                details: { type: "STRING" }
+              }
+            }
+          }
+        };
+
+        const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          const result = JSON.parse(text);
+          setFormData(prev => ({
+            ...prev,
+            title: result.title || prev.title,
+            category: categories.includes(result.category) ? result.category : (prev.category || categories[0]),
+            reminderTarget: result.reminderTarget || prev.reminderTarget,
+            details: result.details || prev.details
+          }));
+          showToast('✨ AI 解析成功！已為您自動填入表單。');
+        } else {
+           throw new Error("API return empty text");
+        }
+      } catch (error) {
+        console.error("AI Analysis Error:", error);
+        showToast('❌ AI 解析失敗，可能是網路問題或圖片無法辨識。請手動填寫。');
+      } finally {
+        setIsAnalyzing(false);
+      }
+    };
+
+    return (
+      <div className="space-y-6">
+        {!editingItem && (
+          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-100 shadow-sm">
+            <h3 className="text-base font-bold text-slate-800 mb-3 flex items-center gap-2"><Sparkles size={18} className="text-blue-600" />新手推薦！快速帶入例行公務範本</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {TASK_TEMPLATES.map(tpl => (
+                <button key={tpl.id} type="button" onClick={() => handleApplyTemplate(tpl)} className="flex items-start text-left p-3 bg-white rounded-lg border border-blue-200/60 hover:border-blue-500 hover:shadow-sm transition-all group">
+                  <div className="mr-3 p-2 bg-blue-50 rounded-md text-blue-600 group-hover:bg-blue-100"><FileText size={16} /></div>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800 group-hover:text-blue-700">{tpl.title}</h4>
+                    <p className="text-xs text-slate-500 mt-1 line-clamp-1">{tpl.reminderTarget ? `對象: ${tpl.reminderTarget}` : '無特定對象'}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-100">
+          <h2 className="text-2xl font-bold text-slate-800 mb-6 border-b pb-4 flex items-center gap-2">
+            {editingItem ? <Edit className="text-blue-600"/> : <Plus className="text-blue-600"/>} {editingItem ? '編輯業務筆記' : '新增業務筆記'}
+          </h2>
+          
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+              {/* 上傳圖片與 AI 辨識區塊移到最上方 */}
+              <div className="space-y-3 md:col-span-2 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
+                   <div>
+                     <label className="block text-sm font-bold text-indigo-900 mb-1">📸 上傳實務照片</label>
+                     <p className="text-xs text-indigo-700">上傳照片後，點擊「AI 智慧解析」，讓機器人幫你自動分類寫筆記！ (最多 5 張)</p>
+                   </div>
+                   <button 
+                     type="button" 
+                     onClick={handleAnalyzeImages}
+                     disabled={currentImages.length === 0 || isAnalyzing}
+                     className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed font-bold text-sm shadow-sm transition-colors flex items-center gap-2 whitespace-nowrap self-start sm:self-auto"
+                   >
+                     {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+                     {isAnalyzing ? '正在分析...' : '🤖 AI 智慧解析'}
+                   </button>
+                </div>
+                
+                {currentImages.length > 0 && (
+                  <div className="flex flex-wrap gap-4 mb-4 bg-white p-3 rounded-lg border border-indigo-50">
+                    {currentImages.map((imgSrc, idx) => {
+                      const isBase64 = imgSrc.startsWith('data:image');
+                      return (
+                        <div key={idx} className="relative inline-block border border-slate-200 rounded-lg p-1 bg-slate-50 shadow-sm">
+                          {isBase64 ? (
+                            <img src={imgSrc} alt={`預覽-${idx}`} className="h-28 w-28 object-cover rounded-md" />
+                          ) : (
+                            <div className="h-28 w-28 flex flex-col items-center justify-center p-2 text-rose-700 font-mono text-[10px] break-all border border-rose-200 rounded-md bg-rose-50 relative">
+                              <ImageIcon size={20} className="mb-1 text-rose-400" />
+                              <span className="text-center font-bold mt-1 text-[11px]">舊檔名無法預覽<br/>請刪除並重傳</span>
+                            </div>
+                          )}
+                          <button type="button" onClick={() => handleRemoveImage(idx)} className="absolute -top-2 -right-2 bg-rose-500 hover:bg-rose-600 text-white p-1 rounded-full shadow transition-colors z-10" title="移除此圖片"><X size={14} /></button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {currentImages.length < 5 ? (
+                  <label className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${isUploading ? 'bg-indigo-100 border-indigo-400' : 'bg-white hover:bg-indigo-50 border-indigo-300'}`}>
+                    <div className="flex flex-col items-center justify-center pt-3 pb-3">
+                      {isUploading ? <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mb-1" /> : <UploadCloud className="w-6 h-6 text-indigo-400 mb-1" />}
+                      <p className="text-sm text-indigo-600 font-medium">{isUploading ? '圖片壓縮與處理中...' : `點擊或拖曳照片上傳 (已選 ${currentImages.length}/5 張)`}</p>
+                    </div>
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} disabled={isUploading || isAnalyzing} multiple />
+                  </label>
+                ) : (
+                  <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg flex items-center gap-2">
+                    <AlertCircle size={16} /><span>您已達到單筆業務 5 張圖片的上傳上限。</span>
+                  </div>
+                )}
+              </div>
+
+              {/* 其餘表單內容 */}
+              <div className="space-y-2 md:col-span-2">
+                <label className="block text-sm font-bold text-slate-700">工作/任務名稱 <span className="text-rose-500">*</span></label>
+                <input required type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"/>
+              </div>
+              <div className="space-y-2">
+                <label className="block text-sm font-bold text-slate-700">業務分類</label>
+                <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white text-sm">
+                  {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="block text-sm font-bold text-slate-700">截止/到期日期 (選填)</label>
+                <input type="date" value={formData.dueDate} onChange={(e) => setFormData({...formData, dueDate: e.target.value})} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"/>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="block text-sm font-bold text-slate-700">提醒對象 / 聯絡人 (選填)</label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input type="text" value={formData.reminderTarget} onChange={(e) => setFormData({...formData, reminderTarget: e.target.value})} className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"/>
+                </div>
+              </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <label className="block text-sm font-bold text-slate-700">詳細流程與注意事項 <span className="text-rose-500">*</span></label>
+                <textarea required rows="10" value={formData.details} onChange={(e) => setFormData({...formData, details: e.target.value})} placeholder="你可以上傳圖片後點擊「AI 智慧解析」，讓機器人幫你寫..." className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y text-sm font-mono leading-relaxed bg-slate-50 focus:bg-white"></textarea>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+              <button type="button" onClick={() => { setActiveTab('list'); setEditingItem(null); }} className="px-6 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium text-sm">取消</button>
+              <button type="submit" disabled={isUploading || isAnalyzing} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 text-sm disabled:opacity-50"><CheckCircle2 size={18} /> {editingItem ? '儲存更新' : '新增筆記'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const CategoryManager = () => (
+    <div className="space-y-6">
+      
+      {/* 顯眼的一鍵備份區塊 */}
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 rounded-xl shadow-lg border border-blue-500 text-white flex flex-col md:flex-row items-center justify-between gap-6">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2 mb-2">
+            <FileDown size={28} className="text-blue-200" />
+            資料備份與匯出
+          </h2>
+          <p className="text-blue-100 text-sm">
+            養成隨時備份的好習慣！點擊按鈕，系統會為您將所有「作用中業務」、「小撇步」與「垃圾桶紀錄」自動排版成一份純文字檔 (.txt) 下載至您的電腦中，方便離線查閱或轉傳交接。
+          </p>
+        </div>
+        <button 
+          onClick={() => downloadBackup(activeItems, tips, trashedItems)}
+          className="w-full md:w-auto px-6 py-3 bg-white text-blue-700 rounded-lg hover:bg-blue-50 hover:shadow-xl font-bold flex items-center justify-center gap-2 whitespace-nowrap transition-all border border-blue-100"
+        >
+          <Download size={20} /> 一鍵下載文字檔備份
+        </button>
+      </div>
+
+      <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-100">
+        <h2 className="text-2xl font-bold text-slate-800 mb-6 border-b pb-4 flex items-center gap-2"><Megaphone className="text-amber-500"/>首頁小撇步跑馬燈管理</h2>
+        <div className="mb-6">
+          <p className="text-sm text-slate-500 mb-4">
+            在這裡新增的簡短備忘錄，會以跑馬燈的形式在首頁不斷輪播，幫助您記住如會計代碼等繁雜小事！
+          </p>
+          <form onSubmit={handleAddTip} className="flex gap-2 mb-4">
+            <input type="text" value={newTip} onChange={(e) => setNewTip(e.target.value)} placeholder="輸入要提醒的小撇步..." className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm"/>
+            <button type="submit" disabled={!newTip.trim()} className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-amber-300 flex items-center gap-2 text-sm font-medium whitespace-nowrap"><Plus size={16} /> 新增撇步</button>
+          </form>
+          <div className="space-y-2">
+            {tips.map(tip => (
+              <div key={tip.id} className="flex items-center justify-between p-3 bg-amber-50 border border-amber-100 rounded-lg group shadow-sm">
+                <div className="flex items-center gap-2"><Lightbulb size={16} className="text-amber-500 flex-shrink-0" /><span className="font-medium text-amber-900 text-sm">{tip.text}</span></div>
+                <button onClick={() => handleDeleteTip(tip.id)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded opacity-0 group-hover:opacity-100 focus:opacity-100"><Trash2 size={16} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-100">
+        <h2 className="text-2xl font-bold text-slate-800 mb-6 border-b pb-4 flex items-center gap-2"><Settings className="text-blue-600"/>業務分類管理</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div>
+            <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Tag size={18} className="text-blue-500" />作用中的分類</h3>
+            <form onSubmit={handleAddCategory} className="flex gap-2 mb-4">
+              <input type="text" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="新增分類名稱..." className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"/>
+              <button type="submit" disabled={!newCategory.trim()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-300 flex items-center gap-2 text-sm font-medium"><Plus size={16} /> 新增</button>
+            </form>
+            <div className="space-y-2">
+              {categories.map(cat => (
+                <div key={cat} className="flex items-center justify-between p-3 bg-blue-50/50 border border-blue-100 rounded-lg group shadow-sm">
+                  <span className="font-medium text-slate-700">{cat}</span>
+                  <button onClick={() => handleArchiveCategory(cat)} disabled={categories.length <= 1} className="p-1.5 text-slate-400 hover:text-amber-600 disabled:opacity-30"><Archive size={16} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Archive size={18} className="text-slate-500" />已封存的分類</h3>
+            <div className="space-y-2">
+              {archivedCategories.map(cat => (
+                <div key={cat} className="flex items-center justify-between p-3 bg-slate-100/50 border border-slate-100 rounded-lg group">
+                  <span className="font-medium text-slate-500 line-through">{cat}</span>
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                    <button onClick={() => handleRestoreCategory(cat)} className="p-1.5 text-slate-400 hover:text-emerald-600"><RotateCcw size={16} /></button>
+                    <button onClick={() => handleDeletePermanentlyCat(cat)} className="p-1.5 text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center text-blue-600">
+        <Loader2 className="animate-spin mb-4" size={48} />
+        <p className="text-lg font-bold text-gray-700">系統載入中，正在連接您的專屬資料庫...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans relative">
+      <header className="bg-slate-800 text-white shadow-md sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-500 p-2 rounded-lg"><LayoutDashboard size={24} className="text-white" /></div>
+            <div>
+              <h1 className="text-xl font-bold tracking-wide">國小事務組長</h1>
+              <p className="text-xs text-slate-300">業務檢索與提醒系統 (支援 AI 辨識)</p>
+            </div>
+          </div>
+          <button onClick={() => downloadBackup(activeItems, tips, trashedItems)} className="hidden sm:flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors border border-slate-600 shadow-sm" title="將目前所有資料匯出成 .txt 文字檔備份">
+            <Download size={16} /><span>匯出備份 (.txt)</span>
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-8 flex flex-col md:flex-row gap-8">
+        <aside className="md:w-64 flex-shrink-0">
+          <nav className="flex flex-col gap-2 bg-white p-4 rounded-xl shadow-sm border border-slate-100 sticky top-24">
+            <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
+            <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
+            <button onClick={() => { setActiveTab('form'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Plus size={20} />新增學到的知識</button>
+            
+            <div className="h-px bg-slate-100 my-2"></div>
+            
+            <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+              <Trash size={20} />
+              垃圾桶
+              {trashedItems.length > 0 && (
+                <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>
+              )}
+            </button>
+            <button onClick={() => { setActiveTab('categories'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
+          </nav>
+        </aside>
+
+        <div className="flex-1 min-w-0">
+          {activeTab === 'dashboard' && <Dashboard />}
+          {activeTab === 'list' && <ItemList />}
+          {activeTab === 'form' && <ItemForm />}
+          {activeTab === 'trash' && <TrashBin />}
+          {activeTab === 'categories' && <CategoryManager />}
+        </div>
+      </main>
+      
+      {toastMsg && (
+        <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-3 rounded-lg shadow-xl flex items-center z-50 transition-all duration-300 border border-slate-700">
+          <CheckCircle2 size={18} className="mr-3 text-emerald-400" /><span className="font-medium text-sm">{toastMsg}</span>
+        </div>
+      )}
+    </div>
+  );
+}
