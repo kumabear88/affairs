@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>事務組長業務系統 (Ezpage 最新穩定版)</title>
+  <title>事務組長業務系統 (AI 智慧版)</title>
   
   <!-- 載入 Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- 載入 Babel 編譯器 (讓瀏覽器即時編譯 React JSX) -->
+  <!-- 載入 Babel 編譯器 -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <!-- 設定 ES Modules 模組地圖 -->
@@ -50,14 +50,11 @@
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
-    // ==========================================
-    // 預設的 Gemini API 金鑰 (留空，讓使用者於系統設定填寫)
-    // ==========================================
+    // ⚠️ 安全考量：絕對不要將您的 AIzaSy... 金鑰直接寫在程式碼中！
+    // 系統已經提供左側「系統設定」讓您在網頁上安全輸入與儲存。
     let defaultApiKey = "";
 
-    // ==========================================
-    // 您的 Firebase 資料庫設定
-    // ==========================================
+    // 您的 Firebase 資料庫設定 (Firebase 設定為公開存取是安全的)
     let firebaseConfig = {
       apiKey: "AIzaSyDBLFK7T2ewIk4qgvlBz9hfQuxEALLUezQ",
       authDomain: "typing-game-755a8.firebaseapp.com",
@@ -69,7 +66,6 @@
       measurementId: "G-169FTTX4GT"
     };
 
-    // 保留內部預覽環境相容性
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
     }
@@ -166,7 +162,7 @@
       };
 
       // ==========================================
-      // ✨ 純淨版 AI 呼叫系統 (無遮蔽，直出真實錯誤)
+      // ✨ 純淨版 AI 呼叫系統 (加入全自動降級尋找可用模型機制)
       // ==========================================
       const callGeminiAPI = async (partsArray, isJson = false) => {
         let activeKey = customApiKey || defaultApiKey;
@@ -176,45 +172,73 @@
            activeKey = __api_key;
         }
 
-        if (!activeKey) {
-          throw new Error("找不到有效的 API 金鑰！請至左側「系統設定」貼上您的新金鑰並儲存。");
+        if (!activeKey || !activeKey.startsWith("AIzaSy")) {
+          throw new Error("找不到有效的 API 金鑰！請確認您填寫的是以 AIzaSy 開頭的正確金鑰。");
         }
 
         const isLocalPreview = typeof __firebase_config !== 'undefined';
-        const aiModel = isLocalPreview ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
+        
+        // 依序嘗試不同模型，解決金鑰權限因人而異的問題
+        const modelsToTry = isLocalPreview 
+          ? ["gemini-2.5-flash-preview-09-2025"] 
+          : ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-1.0-pro"];
 
-        const payload = { contents: [{ parts: partsArray }] };
+        let lastError = null;
 
-        if (isJson) {
-          payload.generationConfig = {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: {
-                title: { type: "STRING" },
-                category: { type: "STRING" },
-                reminderTarget: { type: "STRING" },
-                details: { type: "STRING" }
-              }
+        for (const aiModel of modelsToTry) {
+          try {
+            let currentParts = [...partsArray];
+            const isLegacy = aiModel === "gemini-1.0-pro";
+
+            if (isLegacy) {
+              currentParts = currentParts.filter(p => p.text);
+              if (currentParts.length === 0) throw new Error("此金鑰支援的舊版模型無法解析圖片");
             }
-          };
+
+            const payload = { contents: [{ parts: currentParts }] };
+
+            if (isJson && !isLegacy) {
+              payload.generationConfig = {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: "OBJECT",
+                  properties: {
+                    title: { type: "STRING" },
+                    category: { type: "STRING" },
+                    reminderTarget: { type: "STRING" },
+                    details: { type: "STRING" }
+                  }
+                }
+              };
+            }
+
+            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${activeKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              return text; 
+            } else {
+              throw new Error("AI 回傳空白內容");
+            }
+
+          } catch (error) {
+            console.warn(`[AI 自動降級系統] 嘗試模型 ${aiModel} 失敗:`, error.message);
+            lastError = error;
+            const errMsg = error.message.toLowerCase();
+            
+            // 如果是金鑰本身完全無效，直接報錯
+            if (errMsg.includes("api key not valid") || errMsg.includes("api_key_invalid")) {
+              throw new Error("您輸入的 API 金鑰無效，請至「系統設定」檢查是否貼錯了。");
+            }
+            continue;
+          }
         }
-
-        try {
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${activeKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-
-          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) return text;
-          else throw new Error("AI 回傳空白內容");
-
-        } catch (error) {
-          console.error("[AI API 錯誤]", error);
-          throw new Error(`(${aiModel}) ${error.message}`);
-        }
+        
+        throw new Error(`所有 AI 模型均無存取權限，請確認您的金鑰狀態。最後錯誤：${lastError.message}`);
       };
 
       const handleCopy = (text) => {
@@ -262,9 +286,10 @@
         if (!user) return;
         
         setLoading(true);
-        const q = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+        const tasksRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+        const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
         
-        const unsubscribeTasks = onSnapshot(q, (snapshot) => {
+        const unsubscribeTasks = onSnapshot(tasksRef, (snapshot) => {
           const fetchedItems = snapshot.docs.map(doc => ({
             ...doc.data(),
             id: doc.id
@@ -276,41 +301,29 @@
           setLoading(false);
         });
 
-        const catRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
-        const unsubscribeCategories = onSnapshot(catRef, (docSnap) => {
+        const unsubscribeConfig = onSnapshot(configRef, (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            setCategories(data.list || DEFAULT_CATEGORIES);
-            setArchivedCategories(data.archived || []);
+            setCategories(data.categories || DEFAULT_CATEGORIES);
+            setArchivedCategories(data.archivedCategories || []);
+            setTips(data.tips || []);
             
             if (data.geminiApiKey) {
               setCustomApiKey(data.geminiApiKey);
               setInputApiKey(data.geminiApiKey);
             }
           } else {
-            setDoc(catRef, { list: DEFAULT_CATEGORIES, archived: [] }, { merge: true });
-            setCategories(DEFAULT_CATEGORIES);
-            setArchivedCategories([]);
-          }
-        });
-
-        const tipsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips');
-        const unsubscribeTips = onSnapshot(tipsRef, (docSnap) => {
-          if (docSnap.exists() && docSnap.data().list && docSnap.data().list.length > 0) {
-            setTips(docSnap.data().list);
-          } else {
-            const initialTips = [
-              { id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123會搭配L開頭代收款，2123是應附代收款是學校的補助款。' }
-            ];
-            setDoc(tipsRef, { list: initialTips }, { merge: true });
-            setTips(initialTips);
+            setDoc(configRef, { 
+              categories: DEFAULT_CATEGORIES, 
+              archivedCategories: [],
+              tips: [{ id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123是應附代收款是學校的補助款。' }]
+            }, { merge: true });
           }
         });
 
         return () => {
           unsubscribeTasks();
-          unsubscribeCategories();
-          unsubscribeTips();
+          unsubscribeConfig();
         };
       }, [user]);
 
@@ -385,10 +398,6 @@
           reader.onerror = () => resolve(null); 
         });
       };
-
-      // ----------------------------------------------------
-      // LLM AI 功能
-      // ----------------------------------------------------
 
       const handleDraftEmail = async (item) => {
         setDraftModal({ isOpen: true, title: `✨ AI 通知信草擬：${item.title}`, content: '', loading: true });
@@ -487,8 +496,6 @@
         }
       };
 
-      // ----------------------------------------------------
-      
       const downloadBackup = (currentItems, currentTips, currentTrashed) => {
         const dateStr = new Date().toLocaleString('zh-TW');
         const safeDate = new Date().toISOString().split('T')[0];
@@ -551,7 +558,7 @@
 
       const handleRestoreDefaultTasks = async () => {
         if (!user) return;
-        const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+        const tasksCol = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
 
@@ -593,16 +600,16 @@
         if (!user) return;
         try {
           if (editingItem && editingItem.id) {
-            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', editingItem.id);
             await updateDoc(docRef, newItemData);
-            showToast('已更新業務紀錄');
+            showToast('✅ 已更新業務紀錄，所有裝置已同步');
           } else {
-            const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
+            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
             await addDoc(colRef, { 
               ...newItemData, 
               createdAt: new Date().toISOString() 
             });
-            showToast('已新增業務紀錄');
+            showToast('✅ 已新增業務紀錄，所有裝置已同步');
           }
           setActiveTab('list');
           setEditingItem(null);
@@ -614,7 +621,7 @@
       const handleDelete = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
           await updateDoc(taskRef, { deletedAt: new Date().toISOString() });
           showToast('資料已移至垃圾桶');
         } catch (error) { console.error("Error deleting document:", error); }
@@ -623,7 +630,7 @@
       const handleRestoreTask = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
           await updateDoc(taskRef, { deletedAt: null });
           showToast('已成功還原資料');
         } catch (error) { console.error("Error restoring document:", error); }
@@ -631,9 +638,9 @@
 
       const handlePermanentDelete = async (id) => {
         if (!user) return;
-        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(刪除後將無法復原)")) return;
+        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(所有裝置將同步刪除)")) return;
         try {
-          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id));
           showToast('資料已永久刪除');
         } catch (error) { console.error("Error permanently deleting:", error); }
       };
@@ -645,7 +652,7 @@
         setIsProcessing(true);
         try {
           const deletePromises = trashedItems.map(item => 
-            deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', item.id))
+            deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', item.id))
           );
           await Promise.all(deletePromises);
           showToast('🗑️ 垃圾桶已清空');
@@ -750,13 +757,22 @@
         });
       };
 
+      const saveGlobalConfig = async (newData) => {
+        if (!user) return;
+        try {
+          const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+          await setDoc(configRef, newData, { merge: true });
+        } catch (error) {
+          console.error("Error saving global config", error);
+        }
+      };
+
       const handleSaveApiKey = async () => {
         if (!user) return;
         try {
-          const metaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
-          await setDoc(metaRef, { geminiApiKey: inputApiKey.trim() }, { merge: true });
+          await saveGlobalConfig({ geminiApiKey: inputApiKey.trim() });
           setCustomApiKey(inputApiKey.trim());
-          showToast('✅ AI 金鑰已成功儲存！請前往新增筆記測試 AI 功能。');
+          showToast('✅ AI 金鑰已全域儲存！所有裝置皆可共用 AI 功能。');
         } catch (error) {
           showToast('❌ 金鑰儲存失敗，請檢查網路。');
         }
@@ -767,54 +783,50 @@
         const cleanName = newCategory.trim();
         if (!cleanName || categories.includes(cleanName) || archivedCategories.includes(cleanName)) return;
         const updatedCategories = [...categories, cleanName];
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedCategories }, { merge: true });
-          setNewCategory('');
-          showToast('分類已新增');
-        } catch (error) {}
+        setCategories(updatedCategories);
+        setNewCategory('');
+        await saveGlobalConfig({ categories: updatedCategories });
+        showToast('分類已新增');
       };
 
       const handleArchiveCategory = async (catToArchive) => {
         if (categories.length <= 1) return;
         const updatedActive = categories.filter(c => c !== catToArchive);
         const updatedArchived = [...archivedCategories, catToArchive];
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
-        } catch (error) {}
+        setCategories(updatedActive);
+        setArchivedCategories(updatedArchived);
+        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
       };
 
       const handleRestoreCategory = async (catToRestore) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToRestore);
         const updatedActive = [...categories, catToRestore];
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
-        } catch (error) {}
+        setArchivedCategories(updatedArchived);
+        setCategories(updatedActive);
+        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
       };
 
       const handleDeletePermanentlyCat = async (catToDelete) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToDelete);
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { archived: updatedArchived }, { merge: true });
-        } catch (error) {}
+        setArchivedCategories(updatedArchived);
+        await saveGlobalConfig({ archivedCategories: updatedArchived });
       };
 
       const handleAddTip = async (e) => {
         e.preventDefault();
         if (!newTip.trim()) return;
         const updatedTips = [...tips, { id: Date.now().toString(), text: newTip.trim() }];
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
-          setNewTip('');
-          showToast('小撇步已新增');
-        } catch (error) {}
+        setTips(updatedTips);
+        setNewTip('');
+        await saveGlobalConfig({ tips: updatedTips });
+        showToast('小撇步已新增');
       };
 
       const handleDeleteTip = async (id) => {
         if (!window.confirm("確定要刪除這條撇步嗎？")) return;
         const updatedTips = tips.filter(t => t.id !== id);
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
-        } catch (error) {}
+        setTips(updatedTips);
+        await saveGlobalConfig({ tips: updatedTips });
       };
 
       const filteredItems = useMemo(() => {
@@ -846,7 +858,7 @@
                  <AlertCircle className="w-5 h-5 mr-3 mt-0.5 flex-shrink-0" />
                  <div>
                    <h3 className="font-bold text-sm">提醒：目前為未連線的檢視模式</h3>
-                   <p className="text-xs mt-1">您尚未登入或網路連線有問題。您可以預覽介面，但新增的資料將不會被儲存。請確認 Firebase 金鑰設定是否正確。</p>
+                   <p className="text-xs mt-1">您尚未登入或網路連線有問題。您可以預覽介面，但新增的資料將不會被儲存。請確認 Firebase 網路連線。</p>
                  </div>
                </div>
             )}
@@ -1334,10 +1346,11 @@
             <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center border-b pb-4">
               <Key className="mr-3 text-indigo-600" />
-              AI 智慧助理設定 (金鑰管理)
+              AI 智慧助理設定 (全局金鑰管理)
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
+              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存。<br/>
+              <span className="font-bold text-emerald-600">💡 提示：設定一次後，所有登入此網頁的裝置 (手機/電腦) 皆可共用此金鑰使用 AI 功能。</span>
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input 
@@ -1352,7 +1365,7 @@
                 disabled={!inputApiKey.trim()}
                 className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
               >
-                <CheckCircle2 size={16} /> 儲存金鑰
+                <CheckCircle2 size={16} /> 儲存全局金鑰
               </button>
             </div>
             {customApiKey && <p className="text-xs text-emerald-600 mt-3 font-bold flex items-center"><CheckCircle2 size={14} className="mr-1"/> 目前已成功套用您的專屬 AI 金鑰。</p>}
@@ -1401,38 +1414,34 @@
             <h2 className="text-2xl font-bold text-slate-800 mb-6 border-b pb-4 flex items-center gap-2"><Settings className="text-blue-600"/>業務分類管理</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div>
-                <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2 text-sm"><Tag size={16} className="text-blue-500" />作用中的分類</h3>
+                <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Tag size={18} className="text-blue-500" />作用中的分類</h3>
                 <form onSubmit={handleAddCategory} className="flex gap-2 mb-4">
                   <input type="text" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="新增分類名稱..." className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"/>
                   <button type="submit" disabled={!newCategory.trim()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-300 flex items-center gap-2 text-sm font-medium"><Plus size={16} /> 新增</button>
                 </form>
-                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                <div className="space-y-2">
                   {categories.map(cat => (
-                    <div key={cat} className="flex items-center justify-between p-3 bg-blue-50/50 border border-blue-100 rounded-lg group hover:bg-white transition-colors shadow-sm">
-                      <span className="font-medium text-slate-700 text-sm">{cat}</span>
-                      <button onClick={() => handleArchiveCategory(cat)} disabled={categories.length <= 1} className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors disabled:opacity-30" title={categories.length <= 1 ? "至少需保留一個分類" : "封存此分類"}><Archive size={16} /></button>
+                    <div key={cat} className="flex items-center justify-between p-3 bg-blue-50/50 border border-blue-100 rounded-lg group shadow-sm">
+                      <span className="font-medium text-slate-700">{cat}</span>
+                      <button onClick={() => handleArchiveCategory(cat)} disabled={categories.length <= 1} className="p-1.5 text-slate-400 hover:text-amber-600 disabled:opacity-30"><Archive size={16} /></button>
                     </div>
                   ))}
                 </div>
               </div>
 
               <div>
-                <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2 text-sm"><Archive size={16} className="text-slate-500" />已封存的分類</h3>
-                {archivedCategories.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 border border-dashed border-slate-200 rounded-lg text-sm bg-slate-50/50">目前沒有被封存的分類。</div>
-                ) : (
-                  <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                    {archivedCategories.map(cat => (
-                      <div key={cat} className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-lg group hover:bg-slate-100 transition-colors">
-                        <span className="font-medium text-slate-500 line-through decoration-slate-400 text-sm">{cat}</span>
-                        <div className="flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                          <button onClick={() => handleRestoreCategory(cat)} className="p-1.5 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 rounded bg-white sm:bg-transparent shadow-sm sm:shadow-none transition-colors" title="還原為作用中"><RotateCcw size={16} /></button>
-                          <button onClick={() => handleDeletePermanentlyCat(cat)} className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded bg-white sm:bg-transparent shadow-sm sm:shadow-none transition-colors" title="永久刪除"><Trash2 size={16} /></button>
-                        </div>
+                <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Archive size={18} className="text-slate-500" />已封存的分類</h3>
+                <div className="space-y-2">
+                  {archivedCategories.map(cat => (
+                    <div key={cat} className="flex items-center justify-between p-3 bg-slate-100/50 border border-slate-100 rounded-lg group">
+                      <span className="font-medium text-slate-500 line-through">{cat}</span>
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                        <button onClick={() => handleRestoreCategory(cat)} className="p-1.5 text-slate-400 hover:text-emerald-600"><RotateCcw size={16} /></button>
+                        <button onClick={() => handleDeletePermanentlyCat(cat)} className="p-1.5 text-slate-400 hover:text-rose-600"><Trash2 size={16} /></button>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -1441,121 +1450,73 @@
 
       if (loading) {
         return (
-          <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-            <div className="text-center">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
-              <h2 className="text-xl font-bold text-slate-700">系統載入中...</h2>
-              <p className="text-slate-500 mt-2">正在同步您的雲端資料</p>
-            </div>
+          <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center text-blue-600">
+            <Loader2 className="animate-spin mb-4" size={48} />
+            <p className="text-lg font-bold text-gray-700">系統載入中，正在連接您的專屬資料庫...</p>
           </div>
         );
       }
 
       return (
-        <div className="flex h-screen bg-slate-100 font-sans">
-          <style dangerouslySetInnerHTML={{__html: `
-            .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-            .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-            .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
-          `}} />
-          <aside className="w-64 bg-white border-r border-slate-200 shadow-sm flex flex-col z-20">
-            <div className="p-6 border-b border-slate-100">
-              <h1 className="text-lg font-black text-slate-800 leading-tight">
-                <span className="text-blue-600">總務處</span><br/>事務組長 系統
-              </h1>
-              <p className="text-xs text-slate-500 mt-2 font-medium">業務檢索與雲端提醒</p>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto flex flex-col custom-scrollbar">
-              <ul className="space-y-2 font-medium p-4 flex-none">
-                <li>
-                  <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <LayoutDashboard className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 主控台 (待辦與提醒)
-                  </button>
-                </li>
-                <li>
-                  <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'list' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <ListTodo className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'list' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 業務細節檢索
-                  </button>
-                </li>
-                <li>
-                  <button onClick={handleAddNew} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'form' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <Plus className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'form' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 新增學到的知識
-                  </button>
-                </li>
-                <li className="pt-4 mt-4 border-t border-slate-200">
-                  <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700 shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
-                    <Trash className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'trash' ? 'text-rose-600' : 'text-slate-400 group-hover:text-rose-600'}`} /> 垃圾桶 {trashedItems.length > 0 && <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>}
-                  </button>
-                </li>
-                <li className="pt-2">
-                  <button onClick={() => { setActiveTab('settings'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'settings' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <Settings className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'settings' ? 'text-slate-300' : 'text-slate-400 group-hover:text-slate-600'}`} /> 系統與分類設定
-                  </button>
-                </li>
-              </ul>
-
-              {tips.length > 0 && (
-                <div className="mx-4 mt-auto mb-6 bg-amber-50 rounded-xl border border-amber-200 overflow-hidden shadow-sm flex-none">
-                  <div className="bg-amber-100/70 px-4 py-2.5 flex items-center gap-2 border-b border-amber-200">
-                    <Lightbulb size={16} className="text-amber-600" />
-                    <span className="text-xs font-bold text-amber-800">隨手備忘錄</span>
-                  </div>
-                  <div className="p-3 max-h-[30vh] overflow-y-auto custom-scrollbar bg-amber-50/50">
-                    <ul className="space-y-3">
-                      {tips.map(tip => (
-                        <li key={tip.id} className="text-xs text-amber-900 leading-relaxed flex items-start gap-1.5 border-b border-amber-100/50 pb-2 last:border-0 last:pb-0">
-                          <span className="text-amber-400 mt-0.5 shrink-0 font-bold">•</span>
-                          <span>{tip.text}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              )}
-            </div>
-          </aside>
-
-          <main className="flex-1 flex flex-col h-screen overflow-hidden">
-            <header className="bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shrink-0 shadow-sm z-10">
-              <h2 className="text-2xl font-bold text-slate-800 tracking-tight">
-                {activeTab === 'dashboard' && '主控台'}
-                {activeTab === 'list' && '業務檢索庫'}
-                {activeTab === 'form' && (editingItem ? '編輯筆記' : '新增知識')}
-                {activeTab === 'trash' && '垃圾桶'}
-                {activeTab === 'settings' && '系統設定'}
-              </h2>
+        <div className="min-h-screen bg-slate-50 text-slate-800 font-sans relative">
+          <header className="bg-slate-800 text-white shadow-md sticky top-0 z-20">
+            <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                 <div className="flex flex-col items-end">
-                    <span className="text-sm font-bold text-slate-700">雲端同步已開啟</span>
-                    <span className="text-xs text-emerald-600 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse"></span>資料安全儲存中</span>
-                 </div>
-                 <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold shadow-sm border border-blue-200">事</div>
+                <div className="bg-blue-500 p-2 rounded-lg"><LayoutDashboard size={24} className="text-white" /></div>
+                <div>
+                  <h1 className="text-xl font-bold tracking-wide">國小事務組長</h1>
+                  <p className="text-xs text-slate-300">業務檢索與提醒系統 (公開發布版)</p>
+                </div>
               </div>
-            </header>
+              <button onClick={() => downloadBackup(activeItems, tips, trashedItems)} className="hidden sm:flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors border border-slate-600 shadow-sm" title="將目前所有資料匯出成 .txt 文字檔備份">
+                <Download size={16} /><span>匯出備份 (.txt)</span>
+              </button>
+            </div>
+          </header>
 
-            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar relative">
+          <main className="max-w-6xl mx-auto px-4 py-8 flex flex-col md:flex-row gap-8">
+            <aside className="md:w-64 flex-shrink-0">
+              <nav className="flex flex-col gap-2 bg-white p-4 rounded-xl shadow-sm border border-slate-100 sticky top-24">
+                <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><LayoutDashboard size={20} />主控台 (期限提醒)</button>
+                <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'list' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><ListTodo size={20} />所有業務庫 (檢索)</button>
+                <button onClick={handleAddNew} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'form' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Plus size={20} />新增學到的知識</button>
+                
+                <div className="h-px bg-slate-100 my-2"></div>
+                
+                <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+                  <Trash size={20} />
+                  垃圾桶
+                  {trashedItems.length > 0 && (
+                    <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>
+                  )}
+                </button>
+                <button onClick={() => { setActiveTab('categories'); setEditingItem(null); }} className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'categories' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Settings size={20} />系統與分類設定</button>
+              </nav>
+            </aside>
+
+            <div className="flex-1 min-w-0">
               {activeTab === 'dashboard' && renderDashboard()}
               {activeTab === 'list' && renderItemList()}
               {activeTab === 'form' && renderItemForm()}
               {activeTab === 'trash' && renderTrashBin()}
-              {activeTab === 'settings' && renderCategoryManager()}
+              {activeTab === 'categories' && renderCategoryManager()}
             </div>
           </main>
-
+          
           {toastMsg && (
-            <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-3 rounded-lg shadow-xl flex items-center z-50 transition-all duration-300">
-              <CheckCircle2 size={18} className="mr-2 text-emerald-400" />
-              <span className="font-medium text-sm">{toastMsg}</span>
+            <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-3 rounded-lg shadow-xl flex items-center z-50 transition-all duration-300 border border-slate-700">
+              <CheckCircle2 size={18} className="mr-3 text-emerald-400" /><span className="font-medium text-sm">{toastMsg}</span>
             </div>
           )}
 
+          {/* AI 功能的彈出視窗 */}
           {draftModal.isOpen && (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-indigo-50/80">
                   <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2">
-                    <Sparkles className="text-indigo-500" size={20} /> {draftModal.title}
+                    <Sparkles className="text-indigo-500" size={20} />
+                    {draftModal.title}
                   </h3>
                   <button onClick={() => setDraftModal({ isOpen: false, title: '', content: '', loading: false })} className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-indigo-100 transition-colors">
                     <X size={20} />
@@ -1568,12 +1529,17 @@
                       <p className="font-bold text-indigo-600 animate-pulse">AI 正在為您撰寫內容中，請稍候...</p>
                     </div>
                   ) : (
-                    <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700 bg-slate-50 p-6 rounded-xl border border-slate-200">{draftModal.content}</div>
+                    <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700 bg-slate-50 p-6 rounded-xl border border-slate-200">
+                      {draftModal.content}
+                    </div>
                   )}
                 </div>
                 {!draftModal.loading && draftModal.content && !draftModal.content.startsWith('❌') && (
                   <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end">
-                    <button onClick={() => handleCopy(draftModal.content)} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md">
+                    <button 
+                      onClick={() => handleCopy(draftModal.content)}
+                      className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md"
+                    >
                       <Copy size={18} /> 複製文字
                     </button>
                   </div>
