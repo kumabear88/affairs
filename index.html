@@ -166,8 +166,8 @@
       };
 
       // ==========================================
-      // ✨ 純淨版 AI 呼叫系統 (無遮蔽，直出真實錯誤)
-      // 支援最新 AQ. 開頭金鑰格式
+      // ✨ 終極修正版 AI 呼叫系統 
+      // 確保只使用您金鑰支援的模型
       // ==========================================
       const callGeminiAPI = async (partsArray, isJson = false) => {
         let activeKey = customApiKey || defaultApiKey;
@@ -177,33 +177,26 @@
            activeKey = __api_key;
         }
 
-        // 更新：移除舊版對 AIzaSy 開頭的硬性檢查，支援任何使用者輸入的金鑰
         if (!activeKey) {
-          throw new Error("找不到 API 金鑰！請至左側「系統設定」貼上您的金鑰並儲存。");
+          throw new Error("找不到有效的 API 金鑰！請至左側「系統設定」貼上您的新金鑰並儲存。");
         }
 
         const isLocalPreview = typeof __firebase_config !== 'undefined';
         
-        // 自動降級清單
+        // 核心修正：確保外部環境 (Ezpage) 永遠不會降級到被關閉的 gemini-pro 或 1.0 版本
+        // 因為新申請的 AQ. 開頭金鑰，只支援 1.5 系列的模型！
         const modelsToTry = isLocalPreview 
           ? ["gemini-2.5-flash-preview-09-2025"] 
-          : ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"];
+          : ["gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro"];
 
         let lastError = null;
 
         for (const model of modelsToTry) {
           try {
             let currentParts = [...partsArray];
-            let isLegacy = model === "gemini-pro" || model === "gemini-1.0-pro";
-            
-            if (isLegacy) {
-               currentParts = currentParts.filter(p => p.text); 
-               if (currentParts.length === 0) throw new Error("舊版模型不支援圖片解析");
-            }
-
             const payload = { contents: [{ parts: currentParts }] };
 
-            if (isJson && !isLegacy) {
+            if (isJson) {
               payload.generationConfig = { responseMimeType: "application/json" };
             }
 
@@ -229,6 +222,8 @@
             continue;
           }
         }
+        
+        // 如果迴圈跑完還是失敗，顯示最真實的錯誤訊息
         throw new Error(`模型存取失敗 (請確認您的金鑰有開通 Generative Language API)。最後錯誤：${lastError?.message}`);
       };
 
@@ -1353,14 +1348,14 @@
               AI 智慧助理設定 (金鑰管理)
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              若 AI 功能出現「權限不足」，代表您當前的金鑰未開通此服務或遭到限制。請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
+              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input 
                 type="password" 
                 value={inputApiKey}
                 onChange={(e) => setInputApiKey(e.target.value)}
-                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AIzaSy...)"}
+                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (開頭為 AQ. 或 AIzaSy)"}
                 className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none font-mono text-sm"
               />
               <button 
