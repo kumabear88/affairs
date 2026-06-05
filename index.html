@@ -51,7 +51,7 @@
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
     // ==========================================
-    // ⚠️ 移除壞掉的預設金鑰，強制使用您在 UI 設定的新金鑰
+    // 預設的 Gemini API 金鑰 (留空，讓使用者於系統設定填寫)
     // ==========================================
     let defaultApiKey = "";
 
@@ -162,7 +162,7 @@
 
       const showToast = (msg) => {
         setToastMsg(msg);
-        setTimeout(() => setToastMsg(''), 6000); // 延長提示時間方便看錯誤訊息
+        setTimeout(() => setToastMsg(''), 6000); 
       };
 
       // ==========================================
@@ -180,7 +180,6 @@
           throw new Error("找不到有效的 API 金鑰！請至左側「系統設定」貼上您的新金鑰並儲存。");
         }
 
-        // 直接鎖定使用最新穩定版模型，不降級
         const isLocalPreview = typeof __firebase_config !== 'undefined';
         const aiModel = isLocalPreview ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
 
@@ -214,7 +213,6 @@
 
         } catch (error) {
           console.error("[AI API 錯誤]", error);
-          // 完整印出 Google API 的真實錯誤訊息
           throw new Error(`(${aiModel}) ${error.message}`);
         }
       };
@@ -285,7 +283,6 @@
             setCategories(data.list || DEFAULT_CATEGORIES);
             setArchivedCategories(data.archived || []);
             
-            // 讀取自訂 API 金鑰
             if (data.geminiApiKey) {
               setCustomApiKey(data.geminiApiKey);
               setInputApiKey(data.geminiApiKey);
@@ -426,7 +423,6 @@
         }
         
         setIsAnalyzing(true);
-        // 在 Toast 中顯示使用的金鑰末碼，讓您確認有成功抓到新金鑰
         const keyHint = customApiKey ? `(...${customApiKey.slice(-4)})` : "(未設定)";
         showToast(`🤖 AI 正在使用金鑰 ${keyHint} 閱讀草稿，請稍候...`);
 
@@ -485,7 +481,6 @@
 
         } catch (error) {
           console.error("AI Analysis Error:", error);
-          // 在這裡會顯示完整的錯誤訊息
           showToast(`❌ 整理失敗：${error.message}`);
         } finally {
           setIsAnalyzing(false);
@@ -1474,12 +1469,12 @@
             <div className="flex-1 overflow-y-auto flex flex-col custom-scrollbar">
               <ul className="space-y-2 font-medium p-4 flex-none">
                 <li>
-                  <button onClick={() => setActiveTab('dashboard')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+                  <button onClick={() => { setActiveTab('dashboard'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
                     <LayoutDashboard className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 主控台 (待辦與提醒)
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => setActiveTab('list')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'list' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+                  <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'list' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
                     <ListTodo className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'list' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 業務細節檢索
                   </button>
                 </li>
@@ -1489,12 +1484,12 @@
                   </button>
                 </li>
                 <li className="pt-4 mt-4 border-t border-slate-200">
-                  <button onClick={() => setActiveTab('trash')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700 shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+                  <button onClick={() => { setActiveTab('trash'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700 shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
                     <Trash className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'trash' ? 'text-rose-600' : 'text-slate-400 group-hover:text-rose-600'}`} /> 垃圾桶 {trashedItems.length > 0 && <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>}
                   </button>
                 </li>
                 <li className="pt-2">
-                  <button onClick={() => setActiveTab('settings')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'settings' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+                  <button onClick={() => { setActiveTab('settings'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'settings' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
                     <Settings className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'settings' ? 'text-slate-300' : 'text-slate-400 group-hover:text-slate-600'}`} /> 系統與分類設定
                   </button>
                 </li>
