@@ -1479,16 +1479,21 @@
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => setActiveTab('search')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'search' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <Search className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'search' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 業務細節檢索
+                  <button onClick={() => setActiveTab('list')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'list' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+                    <ListTodo className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'list' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 業務細節檢索
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => { setIsEditing(false); setEditId(null); setFormData({ title: '', category: categories[0] || '其他', dueDate: '', contactPerson: '', details: '', referenceImages: [] }); setActiveTab('add'); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'add' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <Plus className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'add' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 新增學到的知識
+                  <button onClick={handleAddNew} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'form' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+                    <Plus className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'form' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 新增學到的知識
                   </button>
                 </li>
                 <li className="pt-4 mt-4 border-t border-slate-200">
+                  <button onClick={() => setActiveTab('trash')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'trash' ? 'bg-rose-50 text-rose-700 shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'}`}>
+                    <Trash className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'trash' ? 'text-rose-600' : 'text-slate-400 group-hover:text-rose-600'}`} /> 垃圾桶 {trashedItems.length > 0 && <span className="ml-auto bg-rose-200 text-rose-800 text-xs py-0.5 px-2 rounded-full font-bold">{trashedItems.length}</span>}
+                  </button>
+                </li>
+                <li className="pt-2">
                   <button onClick={() => setActiveTab('settings')} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'settings' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
                     <Settings className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'settings' ? 'text-slate-300' : 'text-slate-400 group-hover:text-slate-600'}`} /> 系統與分類設定
                   </button>
@@ -1520,8 +1525,9 @@
             <header className="bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shrink-0 shadow-sm z-10">
               <h2 className="text-2xl font-bold text-slate-800 tracking-tight">
                 {activeTab === 'dashboard' && '主控台'}
-                {activeTab === 'search' && '業務檢索庫'}
-                {activeTab === 'add' && (isEditing ? '編輯筆記' : '新增知識')}
+                {activeTab === 'list' && '業務檢索庫'}
+                {activeTab === 'form' && (editingItem ? '編輯筆記' : '新增知識')}
+                {activeTab === 'trash' && '垃圾桶'}
                 {activeTab === 'settings' && '系統設定'}
               </h2>
               <div className="flex items-center gap-3">
@@ -1535,8 +1541,9 @@
 
             <div className="flex-1 overflow-y-auto p-8 custom-scrollbar relative">
               {activeTab === 'dashboard' && renderDashboard()}
-              {activeTab === 'search' && renderItemList()}
-              {activeTab === 'add' && renderItemForm()}
+              {activeTab === 'list' && renderItemList()}
+              {activeTab === 'form' && renderItemForm()}
+              {activeTab === 'trash' && renderTrashBin()}
               {activeTab === 'settings' && renderCategoryManager()}
             </div>
           </main>
