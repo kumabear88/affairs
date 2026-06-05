@@ -166,7 +166,7 @@
       };
 
       // ==========================================
-      // ✨ 完美防呆版 AI 呼叫系統
+      // ✨ 完美防呆版 AI 呼叫系統 (自動降級與真實報錯)
       // ==========================================
       const callGeminiAPI = async (partsArray, isJson = false) => {
         // 優先使用使用者自訂的金鑰，否則使用預設金鑰
@@ -181,50 +181,57 @@
           throw new Error("系統找不到有效的 API 金鑰，請至「系統設定」頁面填寫。");
         }
 
-        // 外部環境固定使用 1.5-flash，內部預覽使用 preview
         const isLocalPreview = typeof __firebase_config !== 'undefined';
-        const aiModel = isLocalPreview ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
+        
+        // 自動降級清單：若最新模型權限不足，會自動往下測試到最舊版
+        const modelsToTry = isLocalPreview 
+          ? ["gemini-2.5-flash-preview-09-2025"] 
+          : ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"];
 
-        const payload = { contents: [{ parts: partsArray }] };
+        let lastError = null;
 
-        if (isJson) {
-          payload.generationConfig = {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: {
-                title: { type: "STRING" },
-                category: { type: "STRING" },
-                reminderTarget: { type: "STRING" },
-                details: { type: "STRING" }
-              }
+        for (const model of modelsToTry) {
+          try {
+            let currentParts = [...partsArray];
+            let isLegacy = model === "gemini-pro" || model === "gemini-1.0-pro";
+            
+            if (isLegacy) {
+               currentParts = currentParts.filter(p => p.text); // 舊版不支援圖片
+               if (currentParts.length === 0) throw new Error("舊版模型不支援圖片解析");
             }
-          };
-        }
 
-        try {
-          const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${activeKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
+            const payload = { contents: [{ parts: currentParts }] };
 
-          const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) return text;
-          else throw new Error("AI 回傳空白內容");
+            if (isJson && !isLegacy) {
+              payload.generationConfig = { responseMimeType: "application/json" };
+            }
 
-        } catch (error) {
-          console.error("[AI API 錯誤]", error);
-          const errMsg = error.message.toLowerCase();
-          
-          if (errMsg.includes("not found") || errMsg.includes("not supported")) {
-            throw new Error("您目前的 API 金鑰權限不足！請至「Google AI Studio」申請全新的金鑰，並到左側的「系統設定」中更新。");
+            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) return text;
+            else throw new Error("回傳空白內容");
+
+          } catch (error) {
+            lastError = error;
+            console.warn(`[AI 降級系統] 模型 ${model} 嘗試失敗:`, error.message);
+            const errMsg = error.message.toLowerCase();
+            
+            // 金鑰無效的錯誤直接中斷
+            if (errMsg.includes("api key not valid")) {
+              throw new Error("您輸入的 API 金鑰無效，請至系統設定檢查是否貼錯了。");
+            }
+            // 發生任何其他錯誤 (404 Not Found, 403 Permission Denied) 就繼續嘗試下一個舊模型
+            continue;
           }
-          if (errMsg.includes("api key not valid")) {
-            throw new Error("您輸入的 API 金鑰無效，請至系統設定檢查是否貼錯了。");
-          }
-          throw error;
         }
+        
+        // 如果迴圈跑完還是失敗，顯示最真實的錯誤訊息，不再掩蓋
+        throw new Error(`模型存取失敗 (請確認您的金鑰有開通 Generative Language API)。最後錯誤：${lastError?.message}`);
       };
 
       const handleCopy = (text) => {
