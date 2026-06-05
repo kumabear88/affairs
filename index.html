@@ -1353,14 +1353,14 @@
               AI 智慧助理設定 (金鑰管理)
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
+              若 AI 功能出現「權限不足」，代表您當前的金鑰未開通此服務或遭到限制。請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input 
                 type="password" 
                 value={inputApiKey}
                 onChange={(e) => setInputApiKey(e.target.value)}
-                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AQ... 或 AIzaSy...)"}
+                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AIzaSy...)"}
                 className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none font-mono text-sm"
               />
               <button 
