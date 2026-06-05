@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>事務組長業務系統 (雲端同步版)</title>
+  <title>事務組長業務系統 (Ezpage 最新穩定版)</title>
   
   <!-- 載入 Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -37,18 +37,23 @@
 
   <!-- 主程式邏輯 -->
   <script type="text/babel" data-type="module">
-    import React, { useState, useMemo, useEffect } from 'react';
+    import React, { useState, useMemo, useEffect, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
     import { 
       Search, Plus, Calendar, Clock, AlertCircle, CheckCircle2, 
       User, LayoutDashboard, ListTodo, Edit, Trash2, FileText, Loader2,
       Settings, Tag, Archive, RotateCcw, Image as ImageIcon, Sparkles, BookOpen,
       Megaphone, Lightbulb, Download, UploadCloud, X, Trash, RefreshCw, FileDown,
-      Wand2, AlignLeft, Copy, Key
+      Wand2, AlignLeft, Mail, Copy, FileCheck, Key
     } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+
+    // ==========================================
+    // 預設的 Gemini API 金鑰 (留空，讓使用者於系統設定填寫)
+    // ==========================================
+    let defaultApiKey = "";
 
     // ==========================================
     // 您的 Firebase 資料庫設定
@@ -72,9 +77,7 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
-    
-    // 💡 關鍵修改：設定固定的 App ID，讓不同裝置都能對應到同一個資料庫槽位
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'school-affairs-system'; 
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'ezpage-deployment'; 
 
     const DEFAULT_CATEGORIES = [
       '採購發包', '修繕維護', '財產管理', '人事與場地', '庶務與活動', '水電與帳務', '其他'
@@ -87,7 +90,7 @@
         category: '水電與帳務',
         reminderTarget: '出納組、主計室',
         referenceImages: [],
-        details: `【日常水費處理步驟】\n1. 取得電子通知單：\n   每月收到台灣自來水公司電子水費通知單後，下載電子檔並列印。\n\n2. 備妥請購單與憑證：\n   - 填寫「請購(修)單」，品名用途註明「公務水費」，填入對應金額。\n   - 列印繳費證明或扣帳電子通知單，作為原始憑證。\n\n3. 黏貼憑證：\n   - 將列印好的單據平整黏貼在「黏貼憑證用紙」的【貼上憑證線】以下區域。\n\n4. 核章送件：\n   - 蓋上事務組長職章，附在請購單後面，送交出納組與主計室。\n\n【注意事項】\n* 盡量在每個月最後一天前完成，水費不需跨單位抄表與分攤，直接整筆核銷即可。`
+        details: `【日常水費處理步驟】\n1. 取得電子通知單：\n   每月收到台灣自來水公司電子水費通知單後，下載電子檔並列印（例如：115年6月水費電子通知，應繳總金額 3,332 元）。\n\n2. 備妥請購單與憑證：\n   - 填寫「請購(修)單」，品名用途註明「公務水費（例如：115年6月公務水費）」，填入對應金額（如 3,332 元）。\n   - 列印繳費證明或扣帳電子通知單，作為原始憑證。\n\n3. 黏貼憑證：\n   - 將列印好的「水費電子通知單/繳費證明」平整黏貼在「黏貼憑證用紙」的【貼上憑證線】以下區域。\n\n4. 核章送件：\n   - 在黏貼憑證用紙及請購單的「經辦人/經(承)辦單位」蓋上你的職章（事務組長）。\n   - 附在請購單後面，送交出納組與主計室辦理核銷流程。\n\n【注意事項】\n* 處理時間通常與電費差不多，盡量在每個月最後一天前完成，最晚下個月一號前送出。\n* 水費不需像活動中心電費那樣進行複雜的跨單位抄表與比例分攤，直接整筆核銷即可，流程相對簡單。`
       },
       {
         id: 'electricity-bill',
@@ -95,7 +98,7 @@
         category: '水電與帳務',
         reminderTarget: '出納組、主計室、各分攤單位人員 (如威湧運動)',
         referenceImages: [], 
-        details: `【每月例行電費處理步驟】\n1. 取得帳單：\n   每月收到台電電費帳單後，下載電子檔並列印出來。\n\n2. 現場抄表：\n   前往地下一樓電氣室，查看並記錄「集合式電表」的度數。\n\n3. 登記與計算分攤：\n   - 將抄表度數填入「電表分攤登記紀錄」表中。\n   - 計算本期度數與上期度數的差額，並依據合約公式計算各單位。\n\n4. 製作請購與憑證：\n   - 影印填寫好的「支出科目分攤表」與「電表分攤登記紀錄」。\n   - 填寫「請購(修)單」與「黏貼憑證用紙」，並將電費帳單與分攤表黏貼於憑證用紙上。\n\n5. 核章與驗收：\n   - 在騎縫處與核章欄位蓋上職章，並請相關事務人員（驗收證明人）蓋章。\n   - 備齊文件送出納、主計室核銷。`
+        details: `【每月例行電費處理步驟】\n1. 取得帳單：\n   每月收到台電電費帳單後（如 115年6月電費，總金額 135,096 元），下載電子檔並列印出來。\n\n2. 現場抄表：\n   前往地下一樓電氣室，查看並記錄「集合式電表」的度數（如 SPM-8 電表顯示的總電能 kWh 數值，例如 588739.4）。\n\n3. 登記與計算分攤：\n   - 將抄表度數填入「114年度東湖國小活動中心(2樓)電表分攤登記紀錄」表中。\n   - 計算本期度數與上期度數的差額，並依據合約公式計算各單位（例如：東湖國小分攤 84,032 元、威湧運動分攤 51,064 元）。\n\n4. 製作請購與憑證：\n   - 影印填寫好的「支出科目分攤表」與「電表分攤登記紀錄」。\n   - 填寫「請購(修)單」與「黏貼憑證用紙」，並將電費帳單與分攤表黏貼於憑證用紙上。\n\n5. 核章與驗收：\n   - 在騎縫處與核章欄位蓋上職章，並請相關事務人員（驗收證明人）蓋章。\n   - 備齊文件送出納、主計室核銷。\n\n【注意事項】\n* 每月最晚必須在下個月一號前完成所有計算、表單填寫與核章。`
       }
     ];
 
@@ -159,21 +162,22 @@
 
       const showToast = (msg) => {
         setToastMsg(msg);
-        setTimeout(() => setToastMsg(''), 5000); 
+        setTimeout(() => setToastMsg(''), 6000); 
       };
 
       // ==========================================
-      // ✨ AI 呼叫系統
+      // ✨ 純淨版 AI 呼叫系統 (無遮蔽，直出真實錯誤)
       // ==========================================
       const callGeminiAPI = async (partsArray, isJson = false) => {
-        let activeKey = customApiKey;
+        let activeKey = customApiKey || defaultApiKey;
         
+        // 若在開發平台環境預覽，強制使用系統金鑰
         if (typeof __firebase_config !== 'undefined' && typeof __api_key !== 'undefined' && __api_key) {
            activeKey = __api_key;
         }
 
         if (!activeKey) {
-          throw new Error("找不到有效的 API 金鑰！請至左下角「系統設定」貼上您的新金鑰並儲存。");
+          throw new Error("找不到有效的 API 金鑰！請至左側「系統設定」貼上您的新金鑰並儲存。");
         }
 
         const isLocalPreview = typeof __firebase_config !== 'undefined';
@@ -258,11 +262,9 @@
         if (!user) return;
         
         setLoading(true);
-        // 💡 關鍵修改：所有的資料路徑都改為 public/data，實現跨裝置全局同步
-        const tasksRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
-        const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+        const q = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         
-        const unsubscribeTasks = onSnapshot(tasksRef, (snapshot) => {
+        const unsubscribeTasks = onSnapshot(q, (snapshot) => {
           const fetchedItems = snapshot.docs.map(doc => ({
             ...doc.data(),
             id: doc.id
@@ -274,30 +276,41 @@
           setLoading(false);
         });
 
-        const unsubscribeConfig = onSnapshot(configRef, (docSnap) => {
+        const catRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+        const unsubscribeCategories = onSnapshot(catRef, (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            setCategories(data.categories || DEFAULT_CATEGORIES);
-            setArchivedCategories(data.archivedCategories || []);
-            setTips(data.tips || []);
+            setCategories(data.list || DEFAULT_CATEGORIES);
+            setArchivedCategories(data.archived || []);
             
             if (data.geminiApiKey) {
               setCustomApiKey(data.geminiApiKey);
               setInputApiKey(data.geminiApiKey);
             }
           } else {
-            // 初始化全局設定
-            setDoc(configRef, { 
-              categories: DEFAULT_CATEGORIES, 
-              archivedCategories: [],
-              tips: [{ id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123是應附代收款是學校的補助款。' }]
-            }, { merge: true });
+            setDoc(catRef, { list: DEFAULT_CATEGORIES, archived: [] }, { merge: true });
+            setCategories(DEFAULT_CATEGORIES);
+            setArchivedCategories([]);
+          }
+        });
+
+        const tipsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips');
+        const unsubscribeTips = onSnapshot(tipsRef, (docSnap) => {
+          if (docSnap.exists() && docSnap.data().list && docSnap.data().list.length > 0) {
+            setTips(docSnap.data().list);
+          } else {
+            const initialTips = [
+              { id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123會搭配L開頭代收款，2123是應附代收款是學校的補助款。' }
+            ];
+            setDoc(tipsRef, { list: initialTips }, { merge: true });
+            setTips(initialTips);
           }
         });
 
         return () => {
           unsubscribeTasks();
-          unsubscribeConfig();
+          unsubscribeCategories();
+          unsubscribeTips();
         };
       }, [user]);
 
@@ -538,7 +551,7 @@
 
       const handleRestoreDefaultTasks = async () => {
         if (!user) return;
-        const tasksCol = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+        const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
 
@@ -580,16 +593,16 @@
         if (!user) return;
         try {
           if (editingItem && editingItem.id) {
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', editingItem.id);
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
             await updateDoc(docRef, newItemData);
-            showToast('✅ 已更新業務紀錄，所有裝置已同步');
+            showToast('已更新業務紀錄');
           } else {
-            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+            const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
             await addDoc(colRef, { 
               ...newItemData, 
               createdAt: new Date().toISOString() 
             });
-            showToast('✅ 已新增業務紀錄，所有裝置已同步');
+            showToast('已新增業務紀錄');
           }
           setActiveTab('list');
           setEditingItem(null);
@@ -601,7 +614,7 @@
       const handleDelete = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
           await updateDoc(taskRef, { deletedAt: new Date().toISOString() });
           showToast('資料已移至垃圾桶');
         } catch (error) { console.error("Error deleting document:", error); }
@@ -610,7 +623,7 @@
       const handleRestoreTask = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
           await updateDoc(taskRef, { deletedAt: null });
           showToast('已成功還原資料');
         } catch (error) { console.error("Error restoring document:", error); }
@@ -618,9 +631,9 @@
 
       const handlePermanentDelete = async (id) => {
         if (!user) return;
-        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(所有裝置將同步刪除)")) return;
+        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(刪除後將無法復原)")) return;
         try {
-          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id));
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
           showToast('資料已永久刪除');
         } catch (error) { console.error("Error permanently deleting:", error); }
       };
@@ -632,7 +645,7 @@
         setIsProcessing(true);
         try {
           const deletePromises = trashedItems.map(item => 
-            deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', item.id))
+            deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', item.id))
           );
           await Promise.all(deletePromises);
           showToast('🗑️ 垃圾桶已清空');
@@ -737,22 +750,13 @@
         });
       };
 
-      const saveGlobalConfig = async (newData) => {
-        if (!user) return;
-        try {
-          const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-          await setDoc(configRef, newData, { merge: true });
-        } catch (error) {
-          console.error("Error saving global config", error);
-        }
-      };
-
       const handleSaveApiKey = async () => {
         if (!user) return;
         try {
-          await saveGlobalConfig({ geminiApiKey: inputApiKey.trim() });
+          const metaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+          await setDoc(metaRef, { geminiApiKey: inputApiKey.trim() }, { merge: true });
           setCustomApiKey(inputApiKey.trim());
-          showToast('✅ AI 金鑰已全域儲存！所有裝置皆可使用 AI 功能了。');
+          showToast('✅ AI 金鑰已成功儲存！請前往新增筆記測試 AI 功能。');
         } catch (error) {
           showToast('❌ 金鑰儲存失敗，請檢查網路。');
         }
@@ -763,50 +767,54 @@
         const cleanName = newCategory.trim();
         if (!cleanName || categories.includes(cleanName) || archivedCategories.includes(cleanName)) return;
         const updatedCategories = [...categories, cleanName];
-        setCategories(updatedCategories);
-        setNewCategory('');
-        await saveGlobalConfig({ categories: updatedCategories });
-        showToast('分類已新增');
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedCategories }, { merge: true });
+          setNewCategory('');
+          showToast('分類已新增');
+        } catch (error) {}
       };
 
       const handleArchiveCategory = async (catToArchive) => {
         if (categories.length <= 1) return;
         const updatedActive = categories.filter(c => c !== catToArchive);
         const updatedArchived = [...archivedCategories, catToArchive];
-        setCategories(updatedActive);
-        setArchivedCategories(updatedArchived);
-        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleRestoreCategory = async (catToRestore) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToRestore);
         const updatedActive = [...categories, catToRestore];
-        setArchivedCategories(updatedArchived);
-        setCategories(updatedActive);
-        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleDeletePermanentlyCat = async (catToDelete) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToDelete);
-        setArchivedCategories(updatedArchived);
-        await saveGlobalConfig({ archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleAddTip = async (e) => {
         e.preventDefault();
         if (!newTip.trim()) return;
         const updatedTips = [...tips, { id: Date.now().toString(), text: newTip.trim() }];
-        setTips(updatedTips);
-        setNewTip('');
-        await saveGlobalConfig({ tips: updatedTips });
-        showToast('小撇步已新增');
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+          setNewTip('');
+          showToast('小撇步已新增');
+        } catch (error) {}
       };
 
       const handleDeleteTip = async (id) => {
         if (!window.confirm("確定要刪除這條撇步嗎？")) return;
         const updatedTips = tips.filter(t => t.id !== id);
-        setTips(updatedTips);
-        await saveGlobalConfig({ tips: updatedTips });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+        } catch (error) {}
       };
 
       const filteredItems = useMemo(() => {
@@ -1326,11 +1334,10 @@
             <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center border-b pb-4">
               <Key className="mr-3 text-indigo-600" />
-              AI 智慧助理設定 (全局金鑰管理)
+              AI 智慧助理設定 (金鑰管理)
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存。<br/>
-              <span className="font-bold text-emerald-600">💡 提示：設定一次後，所有登入此網頁的裝置 (手機/電腦) 皆可共用此金鑰使用 AI 功能。</span>
+              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input 
@@ -1345,7 +1352,7 @@
                 disabled={!inputApiKey.trim()}
                 className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
               >
-                <CheckCircle2 size={16} /> 儲存全局金鑰
+                <CheckCircle2 size={16} /> 儲存金鑰
               </button>
             </div>
             {customApiKey && <p className="text-xs text-emerald-600 mt-3 font-bold flex items-center"><CheckCircle2 size={14} className="mr-1"/> 目前已成功套用您的專屬 AI 金鑰。</p>}
@@ -1468,7 +1475,7 @@
                 </li>
                 <li>
                   <button onClick={() => { setActiveTab('list'); setEditingItem(null); }} className={`flex items-center p-3 w-full rounded-lg transition-all duration-200 group ${activeTab === 'list' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
-                    <ListTodo className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'list' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 所有業務庫 (檢索)
+                    <ListTodo className={`w-5 h-5 mr-3 transition-colors ${activeTab === 'list' ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} /> 業務細節檢索
                   </button>
                 </li>
                 <li>
@@ -1521,7 +1528,7 @@
               <div className="flex items-center gap-3">
                  <div className="flex flex-col items-end">
                     <span className="text-sm font-bold text-slate-700">雲端同步已開啟</span>
-                    <span className="text-xs text-emerald-600 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse"></span>跨裝置共用模式</span>
+                    <span className="text-xs text-emerald-600 flex items-center"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse"></span>資料安全儲存中</span>
                  </div>
                  <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold shadow-sm border border-blue-200">事</div>
               </div>
@@ -1535,7 +1542,7 @@
               {activeTab === 'settings' && renderCategoryManager()}
             </div>
           </main>
-          
+
           {toastMsg && (
             <div className="fixed bottom-6 right-6 bg-slate-800 text-white px-5 py-3 rounded-lg shadow-xl flex items-center z-50 transition-all duration-300">
               <CheckCircle2 size={18} className="mr-2 text-emerald-400" />
@@ -1543,14 +1550,12 @@
             </div>
           )}
 
-          {/* AI 功能的彈出視窗 */}
           {draftModal.isOpen && (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-indigo-50/80">
                   <h3 className="font-bold text-indigo-900 text-lg flex items-center gap-2">
-                    <Sparkles className="text-indigo-500" size={20} />
-                    {draftModal.title}
+                    <Sparkles className="text-indigo-500" size={20} /> {draftModal.title}
                   </h3>
                   <button onClick={() => setDraftModal({ isOpen: false, title: '', content: '', loading: false })} className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-indigo-100 transition-colors">
                     <X size={20} />
@@ -1563,17 +1568,12 @@
                       <p className="font-bold text-indigo-600 animate-pulse">AI 正在為您撰寫內容中，請稍候...</p>
                     </div>
                   ) : (
-                    <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700 bg-slate-50 p-6 rounded-xl border border-slate-200">
-                      {draftModal.content}
-                    </div>
+                    <div className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700 bg-slate-50 p-6 rounded-xl border border-slate-200">{draftModal.content}</div>
                   )}
                 </div>
                 {!draftModal.loading && draftModal.content && !draftModal.content.startsWith('❌') && (
                   <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end">
-                    <button 
-                      onClick={() => handleCopy(draftModal.content)}
-                      className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md"
-                    >
+                    <button onClick={() => handleCopy(draftModal.content)} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md">
                       <Copy size={18} /> 複製文字
                     </button>
                   </div>
