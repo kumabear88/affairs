@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>事務組長業務系統 (AI 智慧版)</title>
+  <title>事務組長業務系統 (Ezpage 最新穩定版)</title>
   
   <!-- 載入 Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- 載入 Babel 編譯器 -->
+  <!-- 載入 Babel 編譯器 (讓瀏覽器即時編譯 React JSX) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <!-- 設定 ES Modules 模組地圖 -->
@@ -50,11 +50,14 @@
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
-    // ⚠️ 安全考量：絕對不要將您的 AIzaSy... 金鑰直接寫在程式碼中！
-    // 系統已經提供左側「系統設定」讓您在網頁上安全輸入與儲存。
+    // ==========================================
+    // 預設的 Gemini API 金鑰 (留空，讓使用者於系統設定填寫)
+    // ==========================================
     let defaultApiKey = "";
 
-    // 您的 Firebase 資料庫設定 (Firebase 設定為公開存取是安全的)
+    // ==========================================
+    // 您的 Firebase 資料庫設定
+    // ==========================================
     let firebaseConfig = {
       apiKey: "AIzaSyDBLFK7T2ewIk4qgvlBz9hfQuxEALLUezQ",
       authDomain: "typing-game-755a8.firebaseapp.com",
@@ -66,6 +69,7 @@
       measurementId: "G-169FTTX4GT"
     };
 
+    // 保留內部預覽環境相容性
     if (typeof __firebase_config !== 'undefined') {
       try { firebaseConfig = JSON.parse(__firebase_config); } catch(e){}
     }
@@ -162,7 +166,8 @@
       };
 
       // ==========================================
-      // ✨ 純淨版 AI 呼叫系統 (加入全自動降級尋找可用模型機制)
+      // ✨ 純淨版 AI 呼叫系統 (無遮蔽，直出真實錯誤)
+      // 支援最新 AQ. 開頭金鑰格式
       // ==========================================
       const callGeminiAPI = async (partsArray, isJson = false) => {
         let activeKey = customApiKey || defaultApiKey;
@@ -172,73 +177,59 @@
            activeKey = __api_key;
         }
 
-        if (!activeKey || !activeKey.startsWith("AIzaSy")) {
-          throw new Error("找不到有效的 API 金鑰！請確認您填寫的是以 AIzaSy 開頭的正確金鑰。");
+        // 更新：移除舊版對 AIzaSy 開頭的硬性檢查，支援任何使用者輸入的金鑰
+        if (!activeKey) {
+          throw new Error("找不到 API 金鑰！請至左側「系統設定」貼上您的金鑰並儲存。");
         }
 
         const isLocalPreview = typeof __firebase_config !== 'undefined';
         
-        // 依序嘗試不同模型，解決金鑰權限因人而異的問題
+        // 自動降級清單
         const modelsToTry = isLocalPreview 
           ? ["gemini-2.5-flash-preview-09-2025"] 
-          : ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-1.0-pro"];
+          : ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"];
 
         let lastError = null;
 
-        for (const aiModel of modelsToTry) {
+        for (const model of modelsToTry) {
           try {
             let currentParts = [...partsArray];
-            const isLegacy = aiModel === "gemini-1.0-pro";
-
+            let isLegacy = model === "gemini-pro" || model === "gemini-1.0-pro";
+            
             if (isLegacy) {
-              currentParts = currentParts.filter(p => p.text);
-              if (currentParts.length === 0) throw new Error("此金鑰支援的舊版模型無法解析圖片");
+               currentParts = currentParts.filter(p => p.text); 
+               if (currentParts.length === 0) throw new Error("舊版模型不支援圖片解析");
             }
 
             const payload = { contents: [{ parts: currentParts }] };
 
             if (isJson && !isLegacy) {
-              payload.generationConfig = {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "OBJECT",
-                  properties: {
-                    title: { type: "STRING" },
-                    category: { type: "STRING" },
-                    reminderTarget: { type: "STRING" },
-                    details: { type: "STRING" }
-                  }
-                }
-              };
+              payload.generationConfig = { responseMimeType: "application/json" };
             }
 
-            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${activeKey}`, {
+            const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
             });
 
             const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text) {
-              return text; 
-            } else {
-              throw new Error("AI 回傳空白內容");
-            }
+            if (text) return text;
+            else throw new Error("回傳空白內容");
 
           } catch (error) {
-            console.warn(`[AI 自動降級系統] 嘗試模型 ${aiModel} 失敗:`, error.message);
             lastError = error;
+            console.warn(`[AI 降級系統] 模型 ${model} 嘗試失敗:`, error.message);
             const errMsg = error.message.toLowerCase();
             
-            // 如果是金鑰本身完全無效，直接報錯
+            // 金鑰無效的錯誤直接中斷
             if (errMsg.includes("api key not valid") || errMsg.includes("api_key_invalid")) {
-              throw new Error("您輸入的 API 金鑰無效，請至「系統設定」檢查是否貼錯了。");
+              throw new Error("您輸入的 API 金鑰無效，請至系統設定檢查是否貼錯了。");
             }
             continue;
           }
         }
-        
-        throw new Error(`所有 AI 模型均無存取權限，請確認您的金鑰狀態。最後錯誤：${lastError.message}`);
+        throw new Error(`模型存取失敗 (請確認您的金鑰有開通 Generative Language API)。最後錯誤：${lastError?.message}`);
       };
 
       const handleCopy = (text) => {
@@ -286,10 +277,9 @@
         if (!user) return;
         
         setLoading(true);
-        const tasksRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
-        const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+        const q = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         
-        const unsubscribeTasks = onSnapshot(tasksRef, (snapshot) => {
+        const unsubscribeTasks = onSnapshot(q, (snapshot) => {
           const fetchedItems = snapshot.docs.map(doc => ({
             ...doc.data(),
             id: doc.id
@@ -301,29 +291,42 @@
           setLoading(false);
         });
 
-        const unsubscribeConfig = onSnapshot(configRef, (docSnap) => {
+        const catRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+        const unsubscribeCategories = onSnapshot(catRef, (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            setCategories(data.categories || DEFAULT_CATEGORIES);
-            setArchivedCategories(data.archivedCategories || []);
-            setTips(data.tips || []);
+            setCategories(data.list || DEFAULT_CATEGORIES);
+            setArchivedCategories(data.archived || []);
             
+            // 讀取自訂 API 金鑰
             if (data.geminiApiKey) {
               setCustomApiKey(data.geminiApiKey);
               setInputApiKey(data.geminiApiKey);
             }
           } else {
-            setDoc(configRef, { 
-              categories: DEFAULT_CATEGORIES, 
-              archivedCategories: [],
-              tips: [{ id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123是應附代收款是學校的補助款。' }]
-            }, { merge: true });
+            setDoc(catRef, { list: DEFAULT_CATEGORIES, archived: [] }, { merge: true });
+            setCategories(DEFAULT_CATEGORIES);
+            setArchivedCategories([]);
+          }
+        });
+
+        const tipsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips');
+        const unsubscribeTips = onSnapshot(tipsRef, (docSnap) => {
+          if (docSnap.exists() && docSnap.data().list && docSnap.data().list.length > 0) {
+            setTips(docSnap.data().list);
+          } else {
+            const initialTips = [
+              { id: Date.now().toString(), text: '會計系統中 H代表還有這筆錢入帳，2123會搭配L開頭代收款，2123是應附代收款是學校的補助款。' }
+            ];
+            setDoc(tipsRef, { list: initialTips }, { merge: true });
+            setTips(initialTips);
           }
         });
 
         return () => {
           unsubscribeTasks();
-          unsubscribeConfig();
+          unsubscribeCategories();
+          unsubscribeTips();
         };
       }, [user]);
 
@@ -398,6 +401,10 @@
           reader.onerror = () => resolve(null); 
         });
       };
+
+      // ----------------------------------------------------
+      // LLM AI 功能
+      // ----------------------------------------------------
 
       const handleDraftEmail = async (item) => {
         setDraftModal({ isOpen: true, title: `✨ AI 通知信草擬：${item.title}`, content: '', loading: true });
@@ -496,6 +503,8 @@
         }
       };
 
+      // ----------------------------------------------------
+      
       const downloadBackup = (currentItems, currentTips, currentTrashed) => {
         const dateStr = new Date().toLocaleString('zh-TW');
         const safeDate = new Date().toISOString().split('T')[0];
@@ -558,7 +567,7 @@
 
       const handleRestoreDefaultTasks = async () => {
         if (!user) return;
-        const tasksCol = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+        const tasksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
         const now = new Date();
         const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
 
@@ -600,16 +609,16 @@
         if (!user) return;
         try {
           if (editingItem && editingItem.id) {
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', editingItem.id);
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', editingItem.id);
             await updateDoc(docRef, newItemData);
-            showToast('✅ 已更新業務紀錄，所有裝置已同步');
+            showToast('已更新業務紀錄');
           } else {
-            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+            const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tasks');
             await addDoc(colRef, { 
               ...newItemData, 
               createdAt: new Date().toISOString() 
             });
-            showToast('✅ 已新增業務紀錄，所有裝置已同步');
+            showToast('已新增業務紀錄');
           }
           setActiveTab('list');
           setEditingItem(null);
@@ -621,7 +630,7 @@
       const handleDelete = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
           await updateDoc(taskRef, { deletedAt: new Date().toISOString() });
           showToast('資料已移至垃圾桶');
         } catch (error) { console.error("Error deleting document:", error); }
@@ -630,7 +639,7 @@
       const handleRestoreTask = async (id) => {
         if (!user) return;
         try {
-          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
+          const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id);
           await updateDoc(taskRef, { deletedAt: null });
           showToast('已成功還原資料');
         } catch (error) { console.error("Error restoring document:", error); }
@@ -638,9 +647,9 @@
 
       const handlePermanentDelete = async (id) => {
         if (!user) return;
-        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(所有裝置將同步刪除)")) return;
+        if (!window.confirm("確定要永久刪除這筆紀錄嗎？(刪除後將無法復原)")) return;
         try {
-          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id));
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
           showToast('資料已永久刪除');
         } catch (error) { console.error("Error permanently deleting:", error); }
       };
@@ -652,7 +661,7 @@
         setIsProcessing(true);
         try {
           const deletePromises = trashedItems.map(item => 
-            deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', item.id))
+            deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', item.id))
           );
           await Promise.all(deletePromises);
           showToast('🗑️ 垃圾桶已清空');
@@ -757,22 +766,13 @@
         });
       };
 
-      const saveGlobalConfig = async (newData) => {
-        if (!user) return;
-        try {
-          const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-          await setDoc(configRef, newData, { merge: true });
-        } catch (error) {
-          console.error("Error saving global config", error);
-        }
-      };
-
       const handleSaveApiKey = async () => {
         if (!user) return;
         try {
-          await saveGlobalConfig({ geminiApiKey: inputApiKey.trim() });
+          const metaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories');
+          await setDoc(metaRef, { geminiApiKey: inputApiKey.trim() }, { merge: true });
           setCustomApiKey(inputApiKey.trim());
-          showToast('✅ AI 金鑰已全域儲存！所有裝置皆可共用 AI 功能。');
+          showToast('✅ AI 金鑰已成功儲存！請前往新增筆記測試 AI 功能。');
         } catch (error) {
           showToast('❌ 金鑰儲存失敗，請檢查網路。');
         }
@@ -783,50 +783,54 @@
         const cleanName = newCategory.trim();
         if (!cleanName || categories.includes(cleanName) || archivedCategories.includes(cleanName)) return;
         const updatedCategories = [...categories, cleanName];
-        setCategories(updatedCategories);
-        setNewCategory('');
-        await saveGlobalConfig({ categories: updatedCategories });
-        showToast('分類已新增');
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedCategories }, { merge: true });
+          setNewCategory('');
+          showToast('分類已新增');
+        } catch (error) {}
       };
 
       const handleArchiveCategory = async (catToArchive) => {
         if (categories.length <= 1) return;
         const updatedActive = categories.filter(c => c !== catToArchive);
         const updatedArchived = [...archivedCategories, catToArchive];
-        setCategories(updatedActive);
-        setArchivedCategories(updatedArchived);
-        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleRestoreCategory = async (catToRestore) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToRestore);
         const updatedActive = [...categories, catToRestore];
-        setArchivedCategories(updatedArchived);
-        setCategories(updatedActive);
-        await saveGlobalConfig({ categories: updatedActive, archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { list: updatedActive, archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleDeletePermanentlyCat = async (catToDelete) => {
         const updatedArchived = archivedCategories.filter(c => c !== catToDelete);
-        setArchivedCategories(updatedArchived);
-        await saveGlobalConfig({ archivedCategories: updatedArchived });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'categories'), { archived: updatedArchived }, { merge: true });
+        } catch (error) {}
       };
 
       const handleAddTip = async (e) => {
         e.preventDefault();
         if (!newTip.trim()) return;
         const updatedTips = [...tips, { id: Date.now().toString(), text: newTip.trim() }];
-        setTips(updatedTips);
-        setNewTip('');
-        await saveGlobalConfig({ tips: updatedTips });
-        showToast('小撇步已新增');
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+          setNewTip('');
+          showToast('小撇步已新增');
+        } catch (error) {}
       };
 
       const handleDeleteTip = async (id) => {
         if (!window.confirm("確定要刪除這條撇步嗎？")) return;
         const updatedTips = tips.filter(t => t.id !== id);
-        setTips(updatedTips);
-        await saveGlobalConfig({ tips: updatedTips });
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'tips'), { list: updatedTips }, { merge: true });
+        } catch (error) {}
       };
 
       const filteredItems = useMemo(() => {
@@ -858,7 +862,7 @@
                  <AlertCircle className="w-5 h-5 mr-3 mt-0.5 flex-shrink-0" />
                  <div>
                    <h3 className="font-bold text-sm">提醒：目前為未連線的檢視模式</h3>
-                   <p className="text-xs mt-1">您尚未登入或網路連線有問題。您可以預覽介面，但新增的資料將不會被儲存。請確認 Firebase 網路連線。</p>
+                   <p className="text-xs mt-1">您尚未登入或網路連線有問題。您可以預覽介面，但新增的資料將不會被儲存。請確認 Firebase 金鑰設定是否正確。</p>
                  </div>
                </div>
             )}
@@ -1346,18 +1350,17 @@
             <div className="absolute top-0 left-0 w-2 h-full bg-indigo-500"></div>
             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center border-b pb-4">
               <Key className="mr-3 text-indigo-600" />
-              AI 智慧助理設定 (全局金鑰管理)
+              AI 智慧助理設定 (金鑰管理)
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存。<br/>
-              <span className="font-bold text-emerald-600">💡 提示：設定一次後，所有登入此網頁的裝置 (手機/電腦) 皆可共用此金鑰使用 AI 功能。</span>
+              請至 <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-600 underline font-bold">Google AI Studio</a> 免費申請一組全新的 API 金鑰，並將它貼在下方儲存，以開通 AI 自動整理與寫信功能。
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <input 
                 type="password" 
                 value={inputApiKey}
                 onChange={(e) => setInputApiKey(e.target.value)}
-                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AIzaSy...)"}
+                placeholder={customApiKey ? "已儲存自訂金鑰 (可在此更新)" : "貼上新的 API Key (AQ... 或 AIzaSy...)"}
                 className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none font-mono text-sm"
               />
               <button 
@@ -1365,7 +1368,7 @@
                 disabled={!inputApiKey.trim()}
                 className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
               >
-                <CheckCircle2 size={16} /> 儲存全局金鑰
+                <CheckCircle2 size={16} /> 儲存金鑰
               </button>
             </div>
             {customApiKey && <p className="text-xs text-emerald-600 mt-3 font-bold flex items-center"><CheckCircle2 size={14} className="mr-1"/> 目前已成功套用您的專屬 AI 金鑰。</p>}
